@@ -20,8 +20,10 @@ export async function relevantFacts(query, limit = 45) {
   let vecs = null, qv = null;
   if (canEmbed()) {
     try {
-      const stored = await idbAll("vecs"); vecs = new Map(stored.filter(v => v.id.startsWith("f:")).map(v => [v.id.slice(2), v.v]));
-      if (qVecCache.q === query) qv = qVecCache.v; else { const r = await embed([query], "RETRIEVAL_QUERY"); qv = r && r.vecs[0]; qVecCache = { q: query, v: qv }; }
+      if (qVecCache.q !== query) { const r = await embed([query], "RETRIEVAL_QUERY"); qVecCache = { q: query, v: r && r.vecs[0], m: r && r.model }; }
+      qv = qVecCache.v;
+      // сравниваем только векторы одной модели — векторы разных моделей несовместимы
+      const stored = await idbAll("vecs"); vecs = new Map(stored.filter(v => v.id.startsWith("f:") && (!v.m || v.m === qVecCache.m)).map(v => [v.id.slice(2), v.v]));
     } catch { vecs = null; }
   }
   const now = Date.now();
@@ -40,7 +42,7 @@ export async function relevantFacts(query, limit = 45) {
 function touch(list) { const now = Date.now(); list.forEach(f => { f.used = now; }); }
 async function embedFacts(list) {
   if (!canEmbed() || !list.length) return;
-  try { const r = await embed(list.map(f => f.text), "RETRIEVAL_DOCUMENT"); if (r) await idbPut("vecs", list.map((f, i) => ({ id: "f:" + f.id, v: Array.from(r.vecs[i]) }))); } catch {}
+  try { const r = await embed(list.map(f => f.text), "RETRIEVAL_DOCUMENT"); if (r) await idbPut("vecs", list.map((f, i) => ({ id: "f:" + f.id, v: Array.from(r.vecs[i]), m: r.model }))); } catch {}
 }
 export async function ensureFactVecs() {
   if (!canEmbed()) return;
@@ -76,7 +78,10 @@ export function extractActions(text) {
   if (a < 0 || b < a) return null;
   try { return JSON.parse(body.slice(a, b + 1)); } catch { return null; }
 }
-const TEACH_RE = /научись|научи|запомни|сохрани|навык|правило|впредь|всегда|никогда|в следующий раз|не так|неправильн|ошиб|поправ|да[,.! ]|верно|сохраняй|подтверждаю|^да$|ок\b|хорошо|давай|исправь|лучше/i;
+// Навыки и уроки — только по явным словам Сумрака: просьба научиться, поправка или подтверждение «да».
+const TEACH_RE = /научись|научи(ть)?\s|запомни,?\s+как|навык|правил[оа]|впредь|в следующий раз|не так(?=[\s,.!?]|$)|неправильн|ошиб|поправ|исправь|никогда не|всегда (делай|отвечай|пиши|говори)|делай так/i;
+const CONFIRM_RE = /^\s*(да|ага|угу|верно|сохран\S*|подтверждаю|ок|окей|давай|точно)(?=[\s,.!?]|$)/i;
+const real = t => !!t && !/^\s*(\.{2,}|…|-|—)?\s*$/.test(t) && !/^\.\.\.|^…$/.test(t.trim());   // не заглушка «...» из образца
 /* userText — последнее сообщение Сумрака. Навыки и уроки создаются только по его словам,
    а не из найденных в интернете страниц (защита от «подброшенных» инструкций). */
 export function applyActions(act, userText, { temp } = {}) {
@@ -89,16 +94,16 @@ export function applyActions(act, userText, { temp } = {}) {
     const fresh = [];
     arr(act.remember).forEach(r => {
       const text = String(typeof r === "string" ? r : r && r.text || "").trim();
-      if (!text || activeFacts().some(f => f.text.toLowerCase() === text.toLowerCase())) return;
+      if (!real(text) || activeFacts().some(f => f.text.toLowerCase() === text.toLowerCase())) return;
       const f = { id: uid(), text, cat: normCat(r && r.cat), imp: Math.max(1, Math.min(10, +(r && r.imp) || 5)), ts: now, used: now, status: "active" };
       D.facts.push(f); fresh.push(f); out.remembered.push(text);
       D.meta.impSinceReflect = (D.meta.impSinceReflect || 0) + f.imp;
     });
     embedFacts(fresh);
-    if (act.core && typeof act.core === "object") Object.keys(D.core).forEach(k => { if (typeof act.core[k] === "string" && act.core[k].trim()) D.core[k] = act.core[k].trim().slice(0, 1200); });
+    if (act.core && typeof act.core === "object") Object.keys(D.core).forEach(k => { if (typeof act.core[k] === "string" && real(act.core[k].trim())) D.core[k] = act.core[k].trim().slice(0, 1200); });
   }
   arr(act.tasks).forEach(t => {
-    const text = String(typeof t === "string" ? t : t && t.text || "").trim(); if (!text) return;
+    const text = String(typeof t === "string" ? t : t && t.text || "").trim(); if (!real(text)) return;
     const due = t && t.due ? parseLocal(t.due) : null;
     const task = { id: uid(), text, due, repeat: due && REPEAT_TXT[t.repeat] ? t.repeat : null, done: false, notified: false, ts: now };
     D.tasks.push(task); out.newTasks.push(task);
@@ -112,12 +117,12 @@ export function applyActions(act, userText, { temp } = {}) {
   });
   const done = arr(act.done).map(String); D.tasks.forEach(t => { if (done.includes(t.id)) t.done = true; });
   const delT = arr(act.delete_tasks).map(String); D.tasks = D.tasks.filter(t => !delT.includes(t.id));
-  arr(act.notes).forEach(t => { t = String(typeof t === "string" ? t : t && t.text || "").trim(); if (t) D.notes.push({ id: uid(), text: t, ts: now }); });
+  arr(act.notes).forEach(t => { t = String(typeof t === "string" ? t : t && t.text || "").trim(); if (real(t)) D.notes.push({ id: uid(), text: t, ts: now }); });
   const delN = arr(act.delete_notes).map(String); D.notes = D.notes.filter(n => !delN.includes(n.id));
-  const taught = TEACH_RE.test(userText || "");
+  const taught = !temp && (TEACH_RE.test(userText || "") || CONFIRM_RE.test(userText || ""));
   if (taught) {
     arr(act.skills).forEach(s => {
-      if (!s || !s.name || !s.steps) return;
+      if (!s || !real(String(s.name || "")) || !real(String(s.steps || ""))) return;
       const ex = D.skills.find(x => x.name.toLowerCase() === String(s.name).toLowerCase());
       const rec = { name: String(s.name).slice(0, 80), desc: String(s.desc || "").slice(0, 300), trigger: String(s.trigger || "").slice(0, 200), steps: String(s.steps).slice(0, 4000) };
       if (ex) Object.assign(ex, rec, { ts: now }); else D.skills.push({ id: uid(), uses: 0, ts: now, ...rec });
@@ -125,13 +130,13 @@ export function applyActions(act, userText, { temp } = {}) {
     });
     arr(act.lessons).forEach(l => {
       const text = String(typeof l === "string" ? l : l && l.text || "").trim();
-      if (text && !D.lessons.some(x => x.text === text)) { D.lessons.push({ id: uid(), text: text.slice(0, 400), ts: now }); out.learned.push("урок"); }
+      if (real(text) && !D.lessons.some(x => x.text === text)) { D.lessons.push({ id: uid(), text: text.slice(0, 400), ts: now }); out.learned.push("урок"); }
     });
   }
   arr(act.forget_skills).map(String).forEach(id => { D.skills = D.skills.filter(s => s.id !== id); });
   arr(act.used_skills).map(String).forEach(id => { const s = D.skills.find(x => x.id === id); if (s) s.uses = (s.uses || 0) + 1; });
   arr(act.cards).forEach(c => {
-    if (!c || !c.q || !c.a) return;
+    if (!c || !real(String(c.q || "")) || !real(String(c.a || ""))) return;
     D.cards.push({ id: uid(), q: String(c.q).slice(0, 500), a: String(c.a).slice(0, 1500), topic: String(c.topic || "").slice(0, 60), due: now, ivl: 0, ease: 2.5, reps: 0, ts: now });
     out.cards++;
   });
@@ -174,6 +179,7 @@ export async function updateDiary() {
 }
 /* Раз в день (или когда набралось много важного): выводы о Сумраке и обновление профиля. */
 export async function reflect(force) {
+  const coreBefore = JSON.stringify(D.core);
   const due = force || (D.meta.lastReflect || "") !== todayKey() && ((D.meta.impSinceReflect || 0) >= 30 || activeFacts().length >= 5);
   if (!due || activeFacts().length < 3) return false;
   const res = await plain("Ты — аналитическая часть личного ассистента Дмитрия Павлова. Пишешь кратко, по-русски, без выдумок: только то, что следует из данных. Отвечай только JSON.",
@@ -183,19 +189,21 @@ export async function reflect(force) {
 Верни JSON: {"core":{"profile":"","goals":"","people":"","preferences":""},"insights":["..."]}`, { json: true });
   const j = parseJSON(res);
   if (!j || !j.core) return false;
-  Object.keys(D.core).forEach(k => { if (typeof j.core[k] === "string") D.core[k] = j.core[k].trim().slice(0, 1200); });
-  arr(j.insights).forEach(t => { t = String(t).trim(); if (t && !D.insights.some(i => i.text === t)) D.insights.push({ id: uid(), text: t.slice(0, 400), ts: Date.now() }); });
+  // пока модель думала, Сумрак мог сам поправить профиль — его правки важнее
+  if (JSON.stringify(D.core) === coreBefore) Object.keys(D.core).forEach(k => { const v = typeof j.core[k] === "string" ? j.core[k].trim() : ""; if (real(v)) D.core[k] = v.slice(0, 1200); });
+  arr(j.insights).forEach(t => { t = String(t).trim(); if (real(t) && !D.insights.some(i => i.text === t)) D.insights.push({ id: uid(), text: t.slice(0, 400), ts: Date.now() }); });
   D.insights = D.insights.slice(-15);
   D.meta.lastReflect = todayKey(); D.meta.impSinceReflect = 0; persist();
   return true;
 }
 export async function tidyMemory() {
-  const facts = activeFacts(); if (facts.length < 3) return { ok: false, n: facts.length };
+  const facts = activeFacts().filter(f => !f.pinned); if (facts.length < 3) return { ok: false, n: activeFacts().length };
   const res = await plain("Ты наводишь порядок в памяти личного ассистента о его хозяине Сумраке. Отвечай только JSON.",
     `Факты (от старых к новым):\n${facts.map(f => `- (${f.cat}, ${f.imp}) ${f.text}`).join("\n")}\n\nОбъедини дубли, убери противоречия (верным считай более новое), сформулируй кратко. Ничего важного не теряй и не выдумывай. Темы: ${CATS.join(", ")}. Важность 1–10.\nВерни JSON: {"facts":[{"text":"...","cat":"...","imp":5}]}`, { json: true });
   const j = parseJSON(res);
   const list = j && Array.isArray(j.facts) ? j.facts.filter(f => f && f.text) : null;
   if (!list || !list.length || list.length > facts.length + 2 || list.length < facts.length * 0.3) return { ok: false, n: facts.length };
+  if (facts.some(f => f.status === "old")) return { ok: false, n: activeFacts().length };   // пока думал, что-то удалили — не рискуем
   const now = Date.now();
   facts.forEach(f => { f.status = "old"; f.validTo = now; });
   const fresh = list.map(f => ({ id: uid(), text: String(f.text).trim(), cat: normCat(f.cat), imp: Math.max(1, Math.min(10, +f.imp || 5)), ts: now, used: now, status: "active" }));
@@ -204,13 +212,13 @@ export async function tidyMemory() {
   D.meta.lastTidy = now; persist();
   try { await idbDel("vecs", facts.map(f => "f:" + f.id)); } catch {}
   embedFacts(fresh);
-  return { ok: true, n: fresh.length };
+  return { ok: true, n: activeFacts().length };
 }
 /* Урок из оценки 👎 и пояснения Сумрака. */
 export async function lessonFromFeedback(question, answer, comment) {
   const res = await plain("Ты помогаешь ассистенту Дмитрию Павлову учиться на ошибках. Отвечай только JSON.",
     `Вопрос Сумрака: ${question}\nОтвет Дмитрия: ${answer.slice(0, 3000)}\nСумраку не понравилось${comment ? ": " + comment : ""}.\nСформулируй 1 короткое общее правило на будущее (что делать иначе), применимое к похожим случаям. Не пересказывай вопрос.\nВерни JSON: {"lesson":"..."}`, { json: true });
   const j = parseJSON(res); const t = j && String(j.lesson || "").trim();
-  if (t) { D.lessons.push({ id: uid(), text: t.slice(0, 400), ts: Date.now() }); D.lessons = D.lessons.slice(-60); persist(); }
+  if (real(t)) { D.lessons.push({ id: uid(), text: t.slice(0, 400), ts: Date.now() }); D.lessons = D.lessons.slice(-60); persist(); }
   return t;
 }

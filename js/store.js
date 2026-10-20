@@ -51,20 +51,46 @@ export const D = {
 D.facts.forEach(f => { f.cat = f.cat || "другое"; f.imp = f.imp || 5; f.status = f.status || "active"; f.used = f.used || f.ts || Date.now(); });
 
 const KEYS = ["msgs", "facts", "core", "tasks", "notes", "diary", "skills", "lessons", "insights", "cards", "docs", "meta"];
+let onQuota = () => {};
+export const setQuotaHandler = f => { onQuota = f; };
+/* Сохранить всё. Если память телефона переполнена — ужимаем переписку и пробуем ещё раз. */
 export function persist() {
-  let ok = true;
-  KEYS.forEach(k => { ok = save(k, k === "msgs" ? D.msgs.slice(-500) : D[k]) && ok; });
+  const write = n => KEYS.reduce((ok, k) => save(k, k === "msgs" ? D.msgs.slice(-n) : D[k]) && ok, true);
+  if (write(500)) return true;
+  D.msgs = D.msgs.slice(-150).map(m => { const c = { ...m }; delete c.sources; return c; });
+  const ok = write(150);
+  try { onQuota(ok); } catch {}
   return ok;
 }
-export function exportAll(withMsgs = true) {
+export async function exportAll(withMsgs = true) {
   const o = { app: "dmitriy-pavlov", v: 3, at: new Date().toISOString() };
   KEYS.forEach(k => { if (k !== "msgs" || withMsgs) o[k] = D[k]; });
+  try { o.chunks = await idbAll("chunks"); } catch { o.chunks = []; }   // тексты базы знаний
   return o;
 }
-export function importAll(o) {
-  if (!o || typeof o !== "object") throw new Error("bad");
-  KEYS.forEach(k => { if (o[k] !== undefined && (Array.isArray(o[k]) === Array.isArray(D[k]))) D[k] = o[k]; });
-  D.facts.forEach(f => { f.cat = f.cat || "другое"; f.imp = f.imp || 5; f.status = f.status || "active"; });
+const isObj = x => x && typeof x === "object" && !Array.isArray(x);
+/* Восстановление: сначала проверяем всё, и только потом заменяем — испорченная копия ничего не сломает. */
+export async function importAll(o) {
+  if (!isObj(o)) throw new Error("bad");
+  const next = {};
+  for (const k of KEYS) {
+    if (o[k] === undefined) continue;
+    if (Array.isArray(D[k])) {
+      if (!Array.isArray(o[k]) || !o[k].every(isObj)) throw new Error("bad " + k);
+      next[k] = o[k];
+    } else {
+      if (!isObj(o[k])) throw new Error("bad " + k);
+      next[k] = { ...D[k], ...o[k] };
+    }
+  }
+  if (next.facts) next.facts.forEach(f => { f.text = String(f.text || ""); f.cat = f.cat || "другое"; f.imp = f.imp || 5; f.status = f.status || "active"; f.used = f.used || f.ts || Date.now(); });
+  if (next.facts) next.facts = next.facts.filter(f => f.text && f.id);
+  const chunks = Array.isArray(o.chunks) ? o.chunks.filter(c => isObj(c) && c.id && c.docId && typeof c.text === "string") : null;
+  Object.assign(D, next);
+  if (chunks && chunks.length) {
+    await idbPut("chunks", chunks);
+    D.docs.forEach(d => { d.vec = false; });   // векторы пересчитаем
+  }
   persist();
 }
 
@@ -79,18 +105,23 @@ function db() {
       if (!d.objectStoreNames.contains("chunks")) d.createObjectStore("chunks", { keyPath: "id" }).createIndex("doc", "docId");
       if (!d.objectStoreNames.contains("vecs")) d.createObjectStore("vecs", { keyPath: "id" });
     };
-    r.onsuccess = () => resolve(r.result);
-    r.onerror = () => reject(r.error);
+    r.onsuccess = () => { const d = r.result; d.onclose = () => { dbp = null; }; d.onversionchange = () => { d.close(); dbp = null; }; resolve(d); };
+    r.onerror = () => { dbp = null; reject(r.error); };
   });
   return dbp;
 }
-function tx(store, mode, fn) {
+/* iOS после сворачивания может разорвать связь с базой — тогда открываем заново и повторяем один раз. */
+function tx(store, mode, fn, retry = true) {
   return db().then(d => new Promise((resolve, reject) => {
     const t = d.transaction(store, mode); const st = t.objectStore(store);
     const res = fn(st);
     t.oncomplete = () => resolve(res && res.result !== undefined ? res.result : res);
     t.onerror = () => reject(t.error);
-  }));
+    t.onabort = () => reject(t.error || new Error("abort"));
+  })).catch(e => {
+    if (retry && e && (e.name === "InvalidStateError" || /connection|closing|lost/i.test(e.message || ""))) { dbp = null; return tx(store, mode, fn, false); }
+    throw e;
+  });
 }
 export const idbPut = (store, items) => tx(store, "readwrite", st => { arrOf(items).forEach(i => st.put(i)); });
 export const idbAll = store => tx(store, "readonly", st => st.getAll());

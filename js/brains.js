@@ -304,7 +304,7 @@ async function runTool(call, sources) {
     return await toolWebSearch(String(a.query || ""), sources);
   } catch (e) { return "Ошибка инструмента: " + e.message; }
 }
-async function chatCompat(brain, { system, hist, img, onText, signal }) {
+async function chatCompat(brain, { system, hist, img, onText, onStatus, signal }) {
   const c = COMPAT[brain]();
   const messages = [{ role: "system", content: system }, ...hist.map(h => ({ role: h.role, content: h.text }))];
   if (img) { const last = messages[messages.length - 1]; last.content = [{ type: "text", text: last.content }, { type: "image_url", image_url: { url: img.url } }]; }
@@ -324,7 +324,7 @@ async function chatCompat(brain, { system, hist, img, onText, signal }) {
     if (!m) throw new BrainError("Пустой ответ", 503, brain);
     if (m.tool_calls && m.tool_calls.length) {
       messages.push({ role: "assistant", content: m.content || "", tool_calls: m.tool_calls });
-      onText(m.tool_calls.some(t => t.function.name === "web_search") ? "Ищу в интернете…" : "Смотрю…");
+      (onStatus || onText)(m.tool_calls.some(t => t.function.name === "web_search") ? "Ищу в интернете…" : "Смотрю…");
       for (const call of m.tool_calls) messages.push({ role: "tool", tool_call_id: call.id, name: call.function.name, content: JSON.stringify(await runTool(call, sources)).slice(0, 14000) });
       continue;
     }
@@ -388,14 +388,28 @@ async function plainClaude(system, prompt) {
 /* =====================================================================
    ОБЩИЙ ВХОД: перебираем мозги по порядку
    ===================================================================== */
-const shouldFallback = e => e.name !== "AbortError" && (isLocationErr(e) || e.name === "TypeError" || e.status === 429 || e.status >= 500 || e.status === 403 || e.status === 404);
+const shouldFallback = e => e.name !== "AbortError" && (isLocationErr(e) || e.name === "TypeError" || e.status === 429 || e.status >= 500 || e.status === 403 || e.status === 404 || (e.status === 400 && !isKeyErr(e)));
+/* История для любой нейросети: начинается с вопроса, одинаковые роли подряд склеены. */
+function normHist(hist) {
+  const out = [];
+  hist.forEach(h => {
+    if (!h.text) return;
+    if (out.length && out[out.length - 1].role === h.role) out[out.length - 1] = { role: h.role, text: out[out.length - 1].text + "\n\n" + h.text };
+    else out.push({ role: h.role, text: h.text });
+  });
+  while (out.length && out[0].role !== "user") out.shift();
+  return out;
+}
 export async function chat(opts) {
   const list = order(); let last;
   if (!list.length) throw new BrainError("Нет подключённой нейросети", 0, null);
+  const hist = normHist(opts.hist);
   for (const b of list) {
     let gotText = false;
     // Правила собираются под тот мозг, который реально отвечает (у Mistral и Z.ai поиск — инструментами).
-    const o = { ...opts, system: typeof opts.system === "function" ? opts.system(b) : opts.system, onText: t => { gotText = true; opts.onText(t); } };
+    // «Ищу в интернете…» — статус, а не ответ: он не мешает перейти на запасной мозг.
+    const o = { ...opts, hist, system: typeof opts.system === "function" ? opts.system(b) : opts.system,
+      onStatus: t => opts.onText(t), onText: t => { gotText = true; opts.onText(t); } };
     try {
       const r = b === "gemini" ? await chatGemini(o) : b === "claude" ? await chatClaude(o) : await chatCompat(b, o);
       return { ...r, brain: b };

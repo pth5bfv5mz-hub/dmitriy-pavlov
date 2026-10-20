@@ -32,7 +32,7 @@ export async function addDoc(title, text, kind = "текст") {
   if (canEmbed()) {
     try {
       const r = await embed(chunks.map(c => `${title}\n${c.text}`), "RETRIEVAL_DOCUMENT");
-      if (r) { await idbPut("vecs", chunks.map((c, i) => ({ id: c.id, v: Array.from(r.vecs[i]) }))); vec = true; }
+      if (r) { await idbPut("vecs", chunks.map((c, i) => ({ id: c.id, v: Array.from(r.vecs[i]), m: r.model }))); vec = true; }
     } catch {}
   }
   const doc = { id: docId, title: String(title).slice(0, 120), kind, ts: Date.now(), chunks: chunks.length, chars: text.length, vec, preview: text.slice(0, 200) };
@@ -46,8 +46,9 @@ export async function ensureDocVecs() {
   for (const d of D.docs.filter(d => !d.vec)) {
     try {
       const chunks = (await idbAll("chunks")).filter(c => c.docId === d.id);
+      if (!chunks.length) continue;   // текст материала утерян — нечего считать
       const r = await embed(chunks.map(c => `${d.title}\n${c.text}`), "RETRIEVAL_DOCUMENT");
-      if (r) { await idbPut("vecs", chunks.map((c, i) => ({ id: c.id, v: Array.from(r.vecs[i]) }))); d.vec = true; persist(); }
+      if (r) { await idbPut("vecs", chunks.map((c, i) => ({ id: c.id, v: Array.from(r.vecs[i]), m: r.model }))); d.vec = true; persist(); }
     } catch { return; }
   }
 }
@@ -74,7 +75,7 @@ export async function search(query, k = 4) {
   if (canEmbed() && D.docs.some(d => d.vec)) {
     try {
       const r = await embed([query], "RETRIEVAL_QUERY");
-      const vecs = new Map((await idbAll("vecs")).map(v => [v.id, v.v]));
+      const vecs = new Map((await idbAll("vecs")).filter(v => r && (!v.m || v.m === r.model)).map(v => [v.id, v.v]));
       if (r) vs = chunks.filter(c => vecs.has(c.id)).map(c => ({ c, s: cosine(r.vecs[0], vecs.get(c.id)) })).filter(x => x.s > 0.55).sort((a, b) => b.s - a.s);
     } catch {}
   }

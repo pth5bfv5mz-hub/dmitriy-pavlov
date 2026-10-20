@@ -1,13 +1,13 @@
 /* Дмитрий Павлов 3.0 — сборка интерфейса. */
 import { $, $$, uid, esc, md, plural, fmtDue, fmtAgo, isoLocal, hm, dayStart, todayKey, parseLocal, nextDue, pad, REPEAT_TXT, DAYS, MONTHS } from "./util.js";
-import { S, D, DEFAULTS, saveSettings, persist, exportAll, importAll, idbAll } from "./store.js";
+import { S, D, saveSettings, persist, exportAll, importAll, idbAll, setQuotaHandler } from "./store.js";
 import { chat, plain, order, anyBrain, configured, BRAINS, explain, discoverGemini, ping, canTranscribe, canTTS, isBlocked, ttsGemini } from "./brains.js";
 import { buildPrompt, MODES } from "./prompt.js";
 import { relevantFacts, activeFacts, applyActions, stripActions, extractActions, contextStart, updateDiary, reflect, tidyMemory, lessonFromFeedback, ensureFactVecs, dueCards, gradeCard, CATS } from "./memory.js";
 import { addDoc, removeDoc, search, fromUrl, fromFile, ensureDocVecs } from "./knowledge.js";
 import * as V from "./voice.js";
 
-const VERSION = "3.0.0";
+const VERSION = "3.1.0";
 let mode = "auto", deep = false, photo = null, busy = null;
 
 /* =================== Часы и статус =================== */
@@ -75,7 +75,7 @@ function addMsg(role, text, extra = {}) {
 function addSources(el, sources) {
   if (!sources || !sources.length) return;
   const box = document.createElement("div"); box.className = "src";
-  sources.slice(0, 6).forEach(s => {
+  sources.filter(s => /^https?:\/\//i.test(String(s.url || ""))).slice(0, 6).forEach(s => {
     const a = document.createElement("a"); a.href = s.url; a.target = "_blank"; a.rel = "noopener";
     let host = s.title || ""; try { host = host || new URL(s.url).hostname.replace(/^www\./, ""); } catch {}
     a.textContent = host || "источник"; box.append(a);
@@ -190,7 +190,18 @@ async function send(text, opts = {}) {
   const el = addMsg("ai", "", { temp }); const body = el.querySelector(".body");
   body.innerHTML = `<span class="thinking">${img ? "Смотрю на фото…" : deep ? "Думаю глубоко…" : "Думаю…"}</span>`;
   const ctl = new AbortController(); busy = ctl; idleStatus(); syncSendBtn();
-  const onText = t => { const v = stripActions(t); if (v) { body.innerHTML = md(v); scrollDown(); } };
+  // Речь начинается с первой готовой фразы, пока ответ ещё пишется.
+  const speaker = opts.voice || S.speakOn ? V.createSpeaker({ limit: opts.voice ? 1200 : 600 }) : null;
+  let spokenTo = 0;
+  const feed = (v, final) => {
+    if (!speaker) return;
+    const rest = v.slice(spokenTo);
+    if (final) { if (rest.trim()) speaker.add(rest); spokenTo = v.length; return; }
+    const re = /[.!?…]+["»)]?\s+/g; let m, cut = -1;
+    while ((m = re.exec(rest))) { if (m.index + m[0].length >= (spokenTo ? 120 : 40)) { cut = m.index + m[0].length; break; } }
+    if (cut > 0) { speaker.add(rest.slice(0, cut)); spokenTo += cut; }
+  };
+  const onText = t => { const v = stripActions(t); if (v) { body.innerHTML = md(v); scrollDown(); if (opts.onReply) opts.onReply(v); if (!/^(Ищу|Смотрю)/.test(v)) feed(v); } };
   try {
     const [facts, knowledge] = await Promise.all([relevantFacts(text).catch(() => activeFacts().slice(-40)), search(text).catch(() => [])]);
     const system = brain => buildPrompt({ mode, query: text, facts, knowledge, voice: !!opts.voice, temp, deep, brain });
@@ -198,6 +209,7 @@ async function send(text, opts = {}) {
     const res = await chat({ system, hist, img, onText, signal: ctl.signal, deep });
     const visible = stripActions(res.text) || "Готово.";
     body.innerHTML = md(visible);
+    feed(visible, true);
     el.querySelector(".by").innerHTML = `Дмитрий Павлов <span>· ${esc(BRAINS[res.brain]?.name || "")}</span>`;
     addSources(el, res.sources);
     const out = applyActions(extractActions(res.text), text, { temp });
@@ -214,13 +226,14 @@ async function send(text, opts = {}) {
     scrollDown();
     busy = null; idleStatus();
     background();
-    if (!opts.voice) {
-      V.speak(visible).finally(syncSendBtn); syncSendBtn();
-      const toIOS = out.newTasks.find(t => t.due);
-      if (toIOS && S.autoReminders) setTimeout(() => sendToIOS(toIOS), 600);
-    }
+    const spoken = speaker ? speaker.end() : Promise.resolve();
+    if (opts.voice) { await spoken; return visible; }
+    spoken.finally(syncSendBtn); syncSendBtn();
+    const toIOS = out.newTasks.find(t => t.due);
+    if (toIOS && S.autoReminders) setTimeout(() => sendToIOS(toIOS), 600);
     return visible;
   } catch (e) {
+    if (speaker) speaker.cancel();
     if (e.name === "AbortError") { body.innerHTML = `<span class="thinking">Остановлено.</span>`; return ""; }
     const m = explain(e);
     body.innerHTML = `<span class="thinking">${esc(m)}</span>`;
@@ -302,7 +315,7 @@ $("#mic").onclick = async () => {
 };
 
 /* =================== Голос: разговор =================== */
-let talkOn = false, talkPhase = "idle";
+let talkOn = false, talkPhase = "idle", talkGen = 0;
 function talkSet(phase, text) {
   talkPhase = phase;
   $("#talkView").dataset.phase = phase;
@@ -317,7 +330,7 @@ function openTalk() {
   talkLoop();
 }
 function closeTalk() {
-  talkOn = false; $("#talkView").hidden = true;
+  talkOn = false; talkGen++; $("#talkView").hidden = true;
   V.stopRecording(true); V.stopSpeaking(); if (busy) busy.abort(); idleStatus();
 }
 $("#talkClose").onclick = closeTalk;
@@ -326,17 +339,19 @@ $("#orb").onclick = () => {
   if (talkPhase === "speaking") { V.stopSpeaking(); return; }                  // перебить
   if (talkPhase === "listening") { V.stopRecording(); return; }                // закончил говорить
   if (talkPhase === "thinking" && busy) { busy.abort(); return; }
-  if (talkPhase === "idle") talkLoop();
+  if (talkPhase === "idle" && talkOn) talkLoop();
 };
 async function talkLoop() {
+  const gen = ++talkGen;                      // только один цикл разговора одновременно
+  const alive = () => talkOn && gen === talkGen;
   let empties = 0;
-  while (talkOn) {
+  while (alive()) {
     talkSet("listening"); orbLevel(0);
     let text = "";
     try { text = await V.listen({ onLevel: orbLevel, onTranscribing: () => talkSet("transcribing"), onInterim: t => { $("#talkText").textContent = t; } }); }
-    catch (e) { talkSet("idle", voiceErr(e)); return; }
+    catch (e) { if (alive()) talkSet("idle", voiceErr(e)); return; }
     orbLevel(0);
-    if (!talkOn) return;
+    if (!alive()) return;
     if (!text) {
       if (++empties >= 2 || !S.handsFree) { talkSet("idle"); return; }
       continue;
@@ -348,14 +363,12 @@ async function talkLoop() {
     }
     talkSet("thinking");
     let reply = "";
-    try { reply = await send(text, { voice: true }); }
-    catch (e) { reply = e.spoken || explain(e); }
-    if (!talkOn) return;
+    V.onSpeakingChange(on => { syncSendBtn(); if (on && alive()) talkSet("speaking"); });
+    try { reply = await send(text, { voice: true, onReply: r => { $("#talkText").textContent = r.length > 400 ? r.slice(0, 400) + "…" : r; } }); }
+    catch (e) { reply = e.spoken || explain(e); talkSet("speaking"); await V.speak(reply, { force: true }); }
+    finally { V.onSpeakingChange(syncSendBtn); }
+    if (!alive()) return;
     if (!reply) { talkSet("idle"); return; }
-    $("#talkText").textContent = reply.length > 400 ? reply.slice(0, 400) + "…" : reply;
-    talkSet("speaking");
-    await V.speak(reply, { force: true });
-    if (!talkOn) return;
     if (!S.handsFree) { talkSet("idle"); return; }
   }
 }
@@ -404,7 +417,8 @@ function checkReminders() {
     changed = true;
     if (now - t.due < 864e5) {
       const msg = "Сумрак, напоминаю: " + t.text;
-      toast("⏰ " + t.text); V.beep(); addMsg("ai", msg); V.speak(msg, { force: true });
+      toast("⏰ " + t.text); V.beep(); addMsg("ai", msg);
+      if (!talkOn) V.speak(msg, { force: true });
     }
     if (t.repeat) { t.due = nextDue(t.due, t.repeat); t.notified = false; } else t.notified = true;
   });
@@ -595,8 +609,11 @@ $("#diagBtn").onclick = async e => {
 $("#diagCopy").onclick = async () => { try { await navigator.clipboard.writeText(diagReport); toast("Отчёт скопирован — пришли его Claude, если нужна помощь.", 3000); } catch { toast(diagReport); } };
 
 /* =================== Данные =================== */
+let backupCache = "";
+async function prepBackup() { try { backupCache = JSON.stringify(await exportAll()); } catch {} }
 $("#backup").onclick = async () => {
-  const json = JSON.stringify(exportAll());
+  const json = backupCache || JSON.stringify(await exportAll());
+  prepBackup();
   const name = "dmitriy-backup-" + todayKey() + ".json";
   try {
     const file = new File([json], name, { type: "application/json" });
@@ -606,9 +623,9 @@ $("#backup").onclick = async () => {
   catch { $("#restoreBox").hidden = false; $("#restoreText").value = json; $("#restoreText").select(); toast("Выдели и скопируй текст вручную."); }
 };
 $("#restoreBtn").onclick = () => { $("#restoreBox").hidden = !$("#restoreBox").hidden; };
-function restoreFrom(text) {
-  try { importAll(JSON.parse(text)); renderLists(); renderChat(); toast("Восстановлено.", 2000); $("#restoreBox").hidden = true; }
-  catch { toast("Не получилось: копия повреждена."); }
+async function restoreFrom(text) {
+  try { await importAll(JSON.parse(text)); renderLists(); renderChat(); toast("Восстановлено.", 2000); $("#restoreBox").hidden = true; ensureDocVecs().then(renderKnow); prepBackup(); }
+  catch { toast("Не получилось: копия повреждена. Данные не изменены."); }
 }
 $("#restoreGo").onclick = () => restoreFrom($("#restoreText").value);
 $("#restoreFile").onchange = async e => { const f = e.target.files[0]; if (f) restoreFrom(await f.text()); e.target.value = ""; };
@@ -628,13 +645,14 @@ $("#form").addEventListener("submit", e => {
   if (!v && !photo) { if (busy) busy.abort(); else if (V.speaking()) { V.stopSpeaking(); syncSendBtn(); } return; }
   send(v);
 });
-function setTab(t) { document.body.dataset.tab = t; $$(".tabbar button").forEach(b => b.setAttribute("aria-selected", String(b.dataset.tab === t))); if (t === "chat") scrollDown(); }
+function setTab(t) { if (t === "set") prepBackup(); document.body.dataset.tab = t; $$(".tabbar button").forEach(b => b.setAttribute("aria-selected", String(b.dataset.tab === t))); if (t === "chat") scrollDown(); }
 $(".tabbar").addEventListener("click", e => { const b = e.target.closest("[data-tab]"); if (b) setTab(b.dataset.tab); });
 document.addEventListener("touchend", V.unlock, { once: true });
 document.addEventListener("click", V.unlock, { once: true });
 
 /* =================== Запуск =================== */
 $("#ver").textContent = "версия " + VERSION;
+setQuotaHandler(ok => toast(ok ? "Память телефона почти заполнена — я сократил старую переписку. Сделай резервную копию." : "Память телефона переполнена — последние изменения могли не сохраниться. Сделай копию и удали лишние материалы."));
 tickClock(); setInterval(tickClock, 1000);
 renderModes(); fillSettings(); fillGeminiModels(); fillVoices(); renderLists(); renderChat(); setTab("chat");
 try { speechSynthesis.onvoiceschanged = fillVoices; } catch {}

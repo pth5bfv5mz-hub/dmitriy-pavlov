@@ -8,7 +8,8 @@ import { transcribe, canTranscribe, ttsGemini, canTTS } from "./brains.js";
 let actx = null;
 export function audioCtx() {
   if (!actx) { const C = window.AudioContext || window.webkitAudioContext; if (C) actx = new C(); }
-  if (actx && actx.state === "suspended") actx.resume().catch(() => {});
+  // iOS после сворачивания или звонка ставит звук в «suspended» или «interrupted» — будим в любом случае
+  if (actx && actx.state !== "running" && actx.state !== "closed") actx.resume().catch(() => {});
   return actx;
 }
 let unlocked = false;
@@ -39,9 +40,14 @@ export function stopRecording(cancel) { if (current) current.stop(cancel); }
 
 export function record({ onLevel, onSpeech, maxMs = 60000, silenceMs = 1300, noSpeechMs = 9000, vad = true } = {}) {
   return new Promise(async (resolve, reject) => {
+    if (current) current.stop(true);
+    // Пока iPhone спрашивает разрешение на микрофон, запись уже можно отменить
+    const pending = { cancelled: false, stop: () => { pending.cancelled = true; } };
+    current = pending;
     let stream;
     try { stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } }); }
-    catch (e) { return reject(Object.assign(new Error(e && e.name === "NotAllowedError" ? "mic-denied" : "mic-failed"), { cause: e })); }
+    catch (e) { if (current === pending) current = null; return reject(Object.assign(new Error(e && e.name === "NotAllowedError" ? "mic-denied" : "mic-failed"), { cause: e })); }
+    if (pending.cancelled || current !== pending) { stream.getTracks().forEach(t => t.stop()); return resolve(null); }
     const mime = MIME.find(m => { try { return MediaRecorder.isTypeSupported(m); } catch { return false; } }) || "";
     let mr; try { mr = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined); } catch (e) { stream.getTracks().forEach(t => t.stop()); return reject(e); }
     const chunks = []; let cancelled = false, spoke = false, done = false;
@@ -50,7 +56,7 @@ export function record({ onLevel, onSpeech, maxMs = 60000, silenceMs = 1300, noS
     const cleanup = () => {
       try { src && src.disconnect(); } catch {}
       stream.getTracks().forEach(t => t.stop());   // отпускаем микрофон, иначе iOS делает звук тише
-      current = null;
+      if (current === rec) current = null;
       if (cancelled || !chunks.length) return resolve(null);
       resolve(new Blob(chunks, { type: (mr.mimeType || mime || "audio/mp4").split(";")[0] }));
     };
@@ -58,7 +64,7 @@ export function record({ onLevel, onSpeech, maxMs = 60000, silenceMs = 1300, noS
     // Анализ громкости. Уровень шума — по самым тихим моментам (человек часто начинает говорить сразу),
     // порог речи = шум × 3, но в разумных пределах.
     const c = audioCtx();
-    const t0 = performance.now(); let floor = 0.01, lastVoice = 0;
+    const t0 = performance.now(); let floor = 0.01, lastVoice = 0, heard = false;
     try {
       src = c.createMediaStreamSource(stream); an = c.createAnalyser(); an.fftSize = 1024; src.connect(an);
       const buf = new Float32Array(an.fftSize);
@@ -66,20 +72,23 @@ export function record({ onLevel, onSpeech, maxMs = 60000, silenceMs = 1300, noS
         if (done) return;
         an.getFloatTimeDomainData(buf);
         let s = 0; for (const x of buf) s += x * x; const rms = Math.sqrt(s / buf.length);
+        if (rms > 0) heard = true;
         const t = performance.now() - t0;
         if (rms > 0) floor = rms < floor ? rms : Math.min(0.03, floor + (rms - floor) * 0.002);
         const thr = Math.min(0.06, Math.max(0.012, floor * 3));
         if (rms > thr) { if (!spoke) { spoke = true; onSpeech && onSpeech(); } lastVoice = t; }
         onLevel && onLevel(Math.min(1, rms / (thr * 3)));
         if (vad && spoke && t - lastVoice > silenceMs) return finish();
-        if (vad && !spoke && t > noSpeechMs) { cancelled = true; return finish(); }
+        // «Тишина» засчитывается, только если анализатор вообще что-то слышит (иначе звук не запущен — не выбрасываем запись)
+        if (vad && !spoke && heard && t > noSpeechMs) { cancelled = true; return finish(); }
         if (t > maxMs) return finish();
         raf = setTimeout(tick, 50);
       };
       tick();
     } catch { /* без анализа — останавливать придётся кнопкой */ }
     mr.onstop = cleanup;
-    current = { stop: cancel => { if (cancel) cancelled = true; finish(); } };
+    const rec = { stop: cancel => { if (cancel) cancelled = true; finish(); } };
+    current = rec;
     try { mr.start(250); } catch (e) { cleanup(); reject(e); }
     timer = setTimeout(finish, maxMs + 500);
   });
@@ -161,14 +170,51 @@ export async function speak(text, { force, full } = {}) {
       return;
     } catch (e) {
       if (my !== token) return;
-      liveCooldown = Date.now() + 10 * 6e4;   // лимит или сбой — 10 минут говорим голосом iPhone
+      if (!e || e.message !== "audio-off") liveCooldown = Date.now() + 10 * 6e4;   // лимит или сбой — 10 минут говорим голосом iPhone
       return speakIOS(parts.slice(i).join(" "), my);
     }
   }
   return speakIOS(t, my);
 }
+/* Потоковая речь: фразы добавляются по мере того, как нейросеть пишет ответ.
+   Звук для следующей фразы запрашивается заранее, пока звучит текущая. */
+export function createSpeaker({ limit = 0 } = {}) {
+  stopSpeaking();
+  const my = ++token;
+  const segs = []; let closed = false, wake = null, total = 0, cut = false, live = liveAvailable();
+  const notify = () => { if (wake) { const w = wake; wake = null; w(); } };
+  const ask = seg => { seg.audio = ttsGemini(seg.text, S.liveVoice); seg.audio.catch(() => {}); };
+  const add = text => {
+    if (cut || my !== token) return;
+    let t = speakable(text, true); if (!t) return;
+    if (limit && total + t.length > limit) { t = total ? "Остальное — на экране." : t.slice(0, limit); cut = true; }
+    total += t.length;
+    const seg = { text: t }; if (live) ask(seg);
+    segs.push(seg); notify();
+  };
+  const run = (async () => {
+    for (let i = 0; ; i++) {
+      while (i >= segs.length) { if (closed || my !== token) return; await new Promise(r => { wake = r; }); }
+      if (my !== token) return;
+      const seg = segs[i];
+      if (live && seg.audio) {
+        try { await playAudio(await seg.audio, my); continue; }
+        catch (e) { if (my !== token) return; live = false; if (!e || e.message !== "audio-off") liveCooldown = Date.now() + 10 * 6e4; }
+      }
+      await speakIOS(seg.text, my);
+    }
+  })();
+  return {
+    add,
+    end: () => { closed = true; notify(); return run; },
+    cancel: () => { if (my === token) stopSpeaking(); closed = true; notify(); },
+  };
+}
+const sleep = ms => new Promise(r => setTimeout(r, ms));
 async function playAudio({ mime, b64 }, my) {
   const c = audioCtx();
+  if (c.state !== "running") { try { await Promise.race([c.resume(), sleep(800)]); } catch {} }
+  if (c.state !== "running") throw new Error("audio-off");   // звук не запустился — пусть говорит iPhone
   const bytes = Uint8Array.from(atob(b64), ch => ch.charCodeAt(0));
   let buf;
   if (/wav|mpeg|mp3|ogg|aac|mp4/i.test(mime)) {
@@ -182,8 +228,11 @@ async function playAudio({ mime, b64 }, my) {
   if (my !== token) return;
   await new Promise(resolve => {
     const s = c.createBufferSource(); s.buffer = buf; s.connect(c.destination);
-    s.onended = () => { if (playing && playing.s === s) setPlaying(null); resolve(); };
-    setPlaying({ s, stop: () => { try { s.stop(); } catch {} resolve(); } });
+    let fin = false;
+    const end = () => { if (fin) return; fin = true; clearTimeout(dog); if (playing && playing.s === s) setPlaying(null); resolve(); };
+    const dog = setTimeout(end, buf.duration * 1000 + 1500);   // страховка: onended может не прийти
+    s.onended = end;
+    setPlaying({ s, stop: () => { try { s.stop(); } catch {} end(); } });
     s.start(0);
   });
 }
@@ -197,11 +246,16 @@ function speakIOS(t, my) {
   if (cur.trim()) parts.push(cur);
   const v = pickIOS();
   return new Promise(resolve => {
+    const handle = { ios: true, stop: () => { try { speechSynthesis.cancel(); } catch {} resolve(); } };
     const next = i => {
-      if (my !== token || i >= parts.length) { if (playing && playing.ios) setPlaying(null); return resolve(); }
+      if (my !== token || i >= parts.length) { if (playing === handle) setPlaying(null); return resolve(); }
       const u = new SpeechSynthesisUtterance(parts[i].trim()); u.lang = "ru-RU"; if (v) u.voice = v; u.rate = +S.rate || 1; u.pitch = 0.95;
-      u.onend = u.onerror = () => next(i + 1);
-      setPlaying({ ios: true, stop: () => { try { speechSynthesis.cancel(); } catch {} resolve(); } });
+      let moved = false;
+      const go = () => { if (moved) return; moved = true; clearTimeout(dog); next(i + 1); };
+      // iOS иногда теряет фразу после cancel() и не присылает onend — страхуемся по длине текста
+      const dog = setTimeout(go, 2500 + parts[i].length * 110 / (+S.rate || 1));
+      u.onend = u.onerror = go;
+      if (playing !== handle) setPlaying(handle);
       speechSynthesis.speak(u);
     };
     next(0);
