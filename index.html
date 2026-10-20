@@ -31,7 +31,12 @@
     <section class="view chat" id="v-chat" aria-label="Разговор">
       <div class="log" id="log" aria-live="polite"></div>
       <div class="hint" id="hint" hidden></div>
+      <div class="photo-prev" id="photoPrev" hidden><img id="photoImg" alt="Фото к сообщению"><span>Фото прикреплено</span><button type="button" class="x" id="photoDel" aria-label="Убрать фото">×</button></div>
       <form class="composer" id="form">
+        <input type="file" id="photo" accept="image/*" hidden>
+        <button type="button" class="ib" id="photoBtn" title="Фото">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/></svg>
+        </button>
         <textarea id="input" rows="1" placeholder="Сообщение…" aria-label="Сообщение"></textarea>
         <button type="button" class="ib" id="wake" aria-pressed="false" title="Слушать «Дмитрий»">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12h2M6 8v8M10 5v14M14 8v8M18 10v4M22 12h-2"/></svg>
@@ -40,7 +45,8 @@
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>
         </button>
         <button type="submit" class="ib primary" id="send" title="Отправить">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+          <svg class="i-send" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+          <svg class="i-stop" viewBox="0 0 24 24" fill="currentColor"><rect x="7" y="7" width="10" height="10" rx="2"/></svg>
         </button>
       </form>
     </section>
@@ -52,6 +58,14 @@
       <form class="add" id="addTask">
         <input id="newTask" placeholder="Новое дело" aria-label="Новое дело">
         <input id="newDue" type="datetime-local" aria-label="Когда напомнить">
+        <select id="newRepeat" aria-label="Повтор">
+          <option value="">Без повтора</option>
+          <option value="daily">Каждый день</option>
+          <option value="weekdays">По будням</option>
+          <option value="weekly">Каждую неделю</option>
+          <option value="monthly">Каждый месяц</option>
+          <option value="yearly">Каждый год</option>
+        </select>
         <button type="submit">Добавить</button>
       </form>
       <p class="small">Кнопка <b>⏰</b> добавляет дело во встроенные «Напоминания» iPhone, и оно сработает, даже когда приложение закрыто. Настройка один раз: см. «Настройки → Напоминания iPhone».</p>
@@ -70,12 +84,16 @@
     <!-- Память -->
     <section class="view page" id="v-mem" aria-label="Память">
       <h2>Что я о тебе знаю <span id="mstat"></span></h2>
-      <p class="small">Я сам запоминаю важное из наших разговоров. Лишнее можно удалить.</p>
+      <p class="small">Я сам запоминаю важное из наших разговоров и раскладываю по темам. Лишнее можно удалить.</p>
       <ul class="list" id="facts"></ul>
       <form class="add" id="addFact">
         <input id="newFact" placeholder="Добавить факт о себе" aria-label="Новый факт">
         <button type="submit">Запомнить</button>
       </form>
+      <div class="row-btns"><button type="button" id="tidy">Навести порядок в памяти</button></div>
+      <h2>История наших разговоров</h2>
+      <p class="small">Старые разговоры я сжимаю в краткую сводку, чтобы помнить их и через месяц.</p>
+      <p class="diary" id="diary"></p>
     </section>
 
     <!-- Настройки -->
@@ -84,17 +102,24 @@
       <div class="field">
         <label for="provider">Нейросеть</label>
         <select id="provider">
-          <option value="gemini">Google Gemini — бесплатно, с поиском Google</option>
-          <option value="claude">Claude — по платному ключу, с поиском</option>
-          <option value="openai">Другая (OpenRouter, Groq и т. п.)</option>
+          <option value="gemini">Gemini — бесплатно</option>
+          <option value="claude">Claude — платный ключ</option>
+          <option value="openai">Другая: OpenRouter, Groq</option>
         </select>
       </div>
       <div class="field" data-for="gemini">
         <label for="geminiKey">Ключ Gemini API</label>
         <input id="geminiKey" type="password" autocomplete="off" placeholder="AIza…">
         <p class="small">Получить бесплатно: <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com/apikey</a> → «Create API key» → скопируй и вставь сюда.</p>
-        <label for="geminiModel">Модель</label>
-        <input id="geminiModel" placeholder="gemini-2.5-flash">
+        <label for="geminiModelSel">Режим</label>
+        <select id="geminiModelSel">
+          <option value="gemini-2.5-flash">Умный и быстрый</option>
+          <option value="gemini-2.5-pro">Самый умный (Pro)</option>
+          <option value="gemini-2.5-flash-lite">Экономный</option>
+          <option value="custom">Другая модель…</option>
+        </select>
+        <input id="geminiModel" placeholder="название модели, например gemini-2.5-flash" hidden>
+        <p class="small">«Умный и быстрый» подходит для всего. «Самый умный» думает дольше, но бесплатных запросов в день у него меньше. «Экономный» — когда лимит важнее глубины. Если лимит выбранной модели кончится, я сам переключусь на запасную.</p>
       </div>
       <div class="field" data-for="claude">
         <label for="claudeKey">Ключ Claude API</label>

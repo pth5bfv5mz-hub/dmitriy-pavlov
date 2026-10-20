@@ -59,14 +59,24 @@ body[data-tab="mem"] #v-mem,body[data-tab="set"] #v-set{display:flex}
 .card input{border:1px solid var(--line);border-radius:8px;padding:9px 10px;background:var(--surface);min-width:0}
 .card button{align-self:flex-start;background:var(--accent);color:var(--on-accent);border:0;border-radius:8px;padding:8px 14px}
 
+.photo-prev{display:flex;align-items:center;gap:10px;padding:6px 16px;font-size:13.5px;color:var(--muted)}
+.photo-prev img{width:44px;height:44px;object-fit:cover;border-radius:8px;border:1px solid var(--line)}
+.photo-prev .x{margin-left:auto}
+.msg .thumb{display:block;max-width:180px;max-height:180px;border-radius:10px;margin-bottom:6px}
+.grp{padding:10px 12px 4px;font-size:11.5px;letter-spacing:.07em;text-transform:uppercase;color:var(--muted);border-bottom:1px solid var(--line)}
+.diary{white-space:pre-wrap;background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:12px;margin:0;font-size:14.5px}
+.add select{flex:1 1 140px;min-width:0;border:1px solid var(--line);background:var(--surface);border-radius:10px;padding:9px 11px}
 .hint{font-size:13px;color:var(--muted);padding:0 16px 8px}
-.composer{display:flex;gap:8px;align-items:flex-end;border-top:1px solid var(--line);
+.composer{display:flex;gap:6px;align-items:flex-end;border-top:1px solid var(--line);
   padding:8px max(10px,env(safe-area-inset-right,0px)) 8px max(10px,env(safe-area-inset-left,0px));background:var(--surface)}
 .composer textarea{flex:1;min-width:0;resize:none;border:1px solid var(--line);border-radius:20px;background:var(--bg);padding:9px 14px;max-height:140px;outline:none;font-size:16px}
-.ib{width:42px;height:42px;flex:none;border-radius:50%;border:1px solid var(--line);background:var(--surface);display:grid;place-items:center;color:var(--muted)}
+.ib{width:40px;height:40px;flex:none;border-radius:50%;border:1px solid var(--line);background:var(--surface);display:grid;place-items:center;color:var(--muted)}
 .ib svg{width:19px;height:19px}
 .ib.primary{background:var(--accent);border-color:var(--accent);color:var(--on-accent)}
 .ib.live{color:var(--warn);border-color:var(--warn);animation:pulse 1.2s ease-in-out infinite}
+.ib .i-stop{display:none}
+.ib.stop .i-send{display:none}
+.ib.stop .i-stop{display:block}
 .ib[aria-pressed="true"]{color:var(--accent);border-color:var(--accent);background:var(--accent-soft)}
 
 .page{flex-direction:column;gap:10px;overflow-y:auto;-webkit-overflow-scrolling:touch;border-top:1px solid var(--line);
