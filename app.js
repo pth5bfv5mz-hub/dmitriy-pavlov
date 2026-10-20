@@ -3,7 +3,7 @@
    само обращается к выбранной нейросети по ключу пользователя. */
 (() => {
 "use strict";
-const VERSION = "2.0.0";
+const VERSION = "2.1.0";
 const $ = s => document.querySelector(s);
 const $$ = s => Array.from(document.querySelectorAll(s));
 
@@ -14,7 +14,7 @@ const save = (k, v) => { try { localStorage.setItem(LS + k, JSON.stringify(v)); 
 try { navigator.storage && navigator.storage.persist && navigator.storage.persist(); } catch {}
 
 const DEFAULTS = {
-  provider: "gemini", geminiKey: "", geminiModel: "gemini-2.5-flash",
+  provider: "gemini", geminiKey: "", geminiModel: "gemini-flash-latest",
   claudeKey: "", claudeModel: "claude-sonnet-5-5",
   oaBase: "https://openrouter.ai/api/v1", oaKey: "", oaModel: "",
   voice: "", rate: 1.0, speakOn: true, wakeOnStart: false, autoReminders: false,
@@ -507,10 +507,11 @@ async function httpError(res, who) {
   let msg = ""; try { const j = await res.json(); const e = Array.isArray(j) ? j[0] && j[0].error : j.error; msg = (e && (e.message || e.type)) || JSON.stringify(j).slice(0, 300); } catch {}
   const e = new Error(msg || ("HTTP " + res.status)); e.status = res.status; e.who = who; throw e;
 }
-const retriable = e => e && (e.status === 404 || e.status === 429 || e.status >= 500);
+// Переходим на запасную модель при любой ошибке, кроме неверного ключа и запрета по стране.
+const retriable = e => e && !(/location is not supported|User location|API key not valid|API_KEY_INVALID/i.test(e.message || "")) && (e.status === 404 || e.status === 429 || e.status >= 500 || e.status === 403 || e.status === 400);
 
 /* Gemini — с поиском Google и чтением ссылок. При лимите или сбое пробует соседние модели. */
-const GEMINI_FALLBACK = ["gemini-2.5-flash", "gemini-flash-latest", "gemini-2.5-flash-lite"];
+const GEMINI_FALLBACK = ["gemini-flash-latest", "gemini-3.8-flash", "gemini-3.6-flash", "gemini-flash-lite-latest", "gemini-2.5-flash"];
 const geminiChain = first => [...new Set([first || DEFAULTS.geminiModel, ...GEMINI_FALLBACK].map(s => s.trim()).filter(Boolean))];
 function geminiContents(hist, img) {
   const contents = [];
@@ -557,7 +558,7 @@ async function askGemini(hist, img, onText, signal) {
 }
 async function plainGemini(system, prompt) {
   let lastErr;
-  for (const model of [...new Set(["gemini-2.5-flash-lite", ...geminiChain(S.geminiModel)])]) {
+  for (const model of [...new Set(["gemini-flash-lite-latest", ...geminiChain(S.geminiModel)])]) {
     try {
       const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(S.geminiKey.trim())}`, {
         method: "POST", headers: { "Content-Type": "application/json" },
@@ -859,7 +860,7 @@ function checkReminders() {
 }
 
 /* ---------------- Настройки ---------------- */
-const MODEL_PRESETS = ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.5-flash-lite"];
+const MODEL_PRESETS = ["gemini-flash-latest", "gemini-pro-latest", "gemini-flash-lite-latest"];
 function fillSettings() {
   $("#provider").value = S.provider;
   ["claudeKey", "claudeModel", "oaBase", "oaKey", "oaModel", "geminiKey"].forEach(k => { $("#" + k).value = S[k] || ""; });
@@ -963,7 +964,8 @@ function setTab(t) { document.body.dataset.tab = t; $$(".tabbar button").forEach
 $(".tabbar").addEventListener("click", e => { const b = e.target.closest("[data-tab]"); if (b) setTab(b.dataset.tab); });
 
 /* ---------------- Запуск ---------------- */
-// Переход со старой версии: у фактов появились категории.
+// Переход со старой версии: у фактов появились категории, модели 2.5 больше не выдаются новым ключам.
+if (/^gemini-2\.5-/.test(S.geminiModel)) { S.geminiModel = DEFAULTS.geminiModel; saveSettings(); }
 facts.forEach(f => { if (!f.cat) f.cat = "другое"; });
 $("#ver").textContent = "Версия " + VERSION;
 tickClock(); setInterval(tickClock, 1000);
