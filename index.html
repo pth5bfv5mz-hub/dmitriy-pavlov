@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Дмитрий Павлов</title>
+<meta name="description" content="Личный голосовой ассистент Сумрака">
+<meta name="theme-color" content="#f4f5f6" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0f1113" media="(prefers-color-scheme: dark)">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Дмитрий">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="stylesheet" href="style.css">
+</head>
+<body data-tab="chat">
+<div class="app">
+  <header class="top">
+    <div class="who">
+      <h1>Дмитрий Павлов</h1>
+      <p><span class="dot" id="dot"></span><span id="status">Готовлюсь…</span></p>
+    </div>
+    <div class="clock"><div class="t" id="time">--:--</div><div class="d" id="date"></div></div>
+  </header>
+
+  <main class="views">
+    <!-- Разговор -->
+    <section class="view chat" id="v-chat" aria-label="Разговор">
+      <div class="log" id="log" aria-live="polite"></div>
+      <div class="hint" id="hint" hidden></div>
+      <form class="composer" id="form">
+        <textarea id="input" rows="1" placeholder="Сообщение…" aria-label="Сообщение"></textarea>
+        <button type="button" class="ib" id="wake" aria-pressed="false" title="Слушать «Дмитрий»">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12h2M6 8v8M10 5v14M14 8v8M18 10v4M22 12h-2"/></svg>
+        </button>
+        <button type="button" class="ib" id="mic" title="Сказать">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>
+        </button>
+        <button type="submit" class="ib primary" id="send" title="Отправить">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+        </button>
+      </form>
+    </section>
+
+    <!-- Дела -->
+    <section class="view page" id="v-tasks" aria-label="Дела">
+      <h2>Дела и напоминания <span id="tstat"></span></h2>
+      <ul class="list" id="tasks"></ul>
+      <form class="add" id="addTask">
+        <input id="newTask" placeholder="Новое дело" aria-label="Новое дело">
+        <input id="newDue" type="datetime-local" aria-label="Когда напомнить">
+        <button type="submit">Добавить</button>
+      </form>
+      <p class="small">Кнопка <b>⏰</b> добавляет дело во встроенные «Напоминания» iPhone, и оно сработает, даже когда приложение закрыто. Настройка один раз: см. «Настройки → Напоминания iPhone».</p>
+    </section>
+
+    <!-- Заметки -->
+    <section class="view page" id="v-notes" aria-label="Заметки">
+      <h2>Заметки <span id="nstat"></span></h2>
+      <ul class="list" id="notes"></ul>
+      <form class="add" id="addNote">
+        <input id="newNote" placeholder="Быстрая заметка" aria-label="Новая заметка">
+        <button type="submit">Сохранить</button>
+      </form>
+    </section>
+
+    <!-- Память -->
+    <section class="view page" id="v-mem" aria-label="Память">
+      <h2>Что я о тебе знаю <span id="mstat"></span></h2>
+      <p class="small">Я сам запоминаю важное из наших разговоров. Лишнее можно удалить.</p>
+      <ul class="list" id="facts"></ul>
+      <form class="add" id="addFact">
+        <input id="newFact" placeholder="Добавить факт о себе" aria-label="Новый факт">
+        <button type="submit">Запомнить</button>
+      </form>
+    </section>
+
+    <!-- Настройки -->
+    <section class="view page" id="v-set" aria-label="Настройки">
+      <h2>Мозг</h2>
+      <div class="field">
+        <label for="provider">Нейросеть</label>
+        <select id="provider">
+          <option value="gemini">Google Gemini — бесплатно, с поиском Google</option>
+          <option value="claude">Claude — по платному ключу, с поиском</option>
+          <option value="openai">Другая (OpenRouter, Groq и т. п.)</option>
+        </select>
+      </div>
+      <div class="field" data-for="gemini">
+        <label for="geminiKey">Ключ Gemini API</label>
+        <input id="geminiKey" type="password" autocomplete="off" placeholder="AIza…">
+        <p class="small">Получить бесплатно: <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com/apikey</a> → «Create API key» → скопируй и вставь сюда.</p>
+        <label for="geminiModel">Модель</label>
+        <input id="geminiModel" placeholder="gemini-2.5-flash">
+      </div>
+      <div class="field" data-for="claude">
+        <label for="claudeKey">Ключ Claude API</label>
+        <input id="claudeKey" type="password" autocomplete="off" placeholder="sk-ant-…">
+        <p class="small">Ключ: <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener">console.anthropic.com</a>. Платно, по факту использования.</p>
+        <label for="claudeModel">Модель</label>
+        <input id="claudeModel" placeholder="claude-sonnet-5-5">
+      </div>
+      <div class="field" data-for="openai">
+        <label for="oaBase">Адрес API</label>
+        <input id="oaBase" placeholder="https://openrouter.ai/api/v1">
+        <label for="oaKey">Ключ</label>
+        <input id="oaKey" type="password" autocomplete="off" placeholder="sk-or-…">
+        <label for="oaModel">Модель</label>
+        <input id="oaModel" placeholder="например, deepseek/deepseek-chat-v3-0324:free">
+        <p class="small">У таких моделей нет поиска Google; вместо него я ищу в Википедии и смотрю погоду через Open-Meteo.</p>
+      </div>
+      <div class="row-btns"><button type="button" id="testBrain">Проверить связь</button><span id="testOut" class="small"></span></div>
+
+      <h2>Голос</h2>
+      <div class="field">
+        <label for="voice">Голос Дмитрия</label>
+        <select id="voice"><option value="">По умолчанию</option></select>
+        <p class="small">Мужской голос «Юрий» скачивается один раз: Настройки iPhone → Универсальный доступ → Устный контент → Голоса → Русский → Юрий. После этого перезапусти приложение.</p>
+        <label for="rate">Скорость речи <span id="rateVal"></span></label>
+        <input id="rate" type="range" min="0.7" max="1.4" step="0.05">
+      </div>
+      <label class="check"><input type="checkbox" id="speakOn"> Отвечать голосом</label>
+      <label class="check"><input type="checkbox" id="wakeOnStart"> Сразу слушать «Дмитрий» при открытии</label>
+      <div class="row-btns"><button type="button" id="testVoice">Проверить голос</button></div>
+
+      <h2>Напоминания iPhone</h2>
+      <p class="small">Чтобы я ставил дела во встроенные «Напоминания» (звенят, даже когда приложение закрыто), один раз создай команду в приложении «Команды». Пошагово — в инструкции:</p>
+      <p class="small"><a href="guide.html#reminders" target="_blank" rel="noopener">Как создать команду «ДП Напоминание»</a></p>
+      <label class="check"><input type="checkbox" id="autoReminders"> Сразу отправлять новые напоминания в iPhone</label>
+      <div class="row-btns"><button type="button" id="testReminder">Проверить команду</button></div>
+
+      <h2>Данные</h2>
+      <p class="small">Всё хранится только на этом телефоне. Сделай резервную копию, чтобы не потерять память.</p>
+      <div class="row-btns">
+        <button type="button" id="backup">Скопировать резервную копию</button>
+        <button type="button" id="restoreBtn">Восстановить</button>
+        <button type="button" id="clearChat">Очистить переписку</button>
+      </div>
+      <div id="restoreBox" hidden>
+        <textarea id="restoreText" rows="4" placeholder="Вставь сюда резервную копию"></textarea>
+        <div class="row-btns"><button type="button" id="restoreGo">Восстановить из текста</button></div>
+      </div>
+      <p class="small" id="ver"></p>
+    </section>
+  </main>
+
+  <nav class="tabbar" role="tablist">
+    <button role="tab" data-tab="chat"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5h16v11H9l-5 4z"/></svg><span>Разговор</span></button>
+    <button role="tab" data-tab="tasks"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6h11M9 12h11M9 18h11M4 6l1 1 2-2M4 12l1 1 2-2M4 18l1 1 2-2"/></svg><span>Дела<i id="tcount"></i></span></button>
+    <button role="tab" data-tab="notes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3h9l4 4v14H6z"/><path d="M9 11h7M9 15h7"/></svg><span>Заметки</span></button>
+    <button role="tab" data-tab="mem"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 21c1.5-4 4.5-6 8-6s6.5 2 8 6"/></svg><span>Память</span></button>
+    <button role="tab" data-tab="set"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg><span>Настройки</span></button>
+  </nav>
+</div>
+<div class="toast" id="toast" hidden><span id="toastText"></span><button type="button" id="toastOk">Понял</button></div>
+<script src="app.js"></script>
+</body>
+</html>
