@@ -37,7 +37,7 @@ a{color:var(--accent)}
 .views{flex:1;min-height:0;position:relative}
 .view{position:absolute;inset:0;display:none}
 body[data-tab="chat"] #v-chat,body[data-tab="tasks"] #v-tasks,body[data-tab="notes"] #v-notes,
-body[data-tab="mem"] #v-mem,body[data-tab="set"] #v-set{display:flex}
+body[data-tab="mem"] #v-mem,body[data-tab="set"] #v-set,body[data-tab="know"] #v-know{display:flex}
 
 .chat{flex-direction:column;border-top:1px solid var(--line);background:var(--surface)}
 .log{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;display:flex;flex-direction:column;gap:14px;
@@ -122,3 +122,49 @@ body[data-tab="mem"] #v-mem,body[data-tab="set"] #v-set{display:flex}
 
 @media (prefers-reduced-motion:no-preference){.msg{animation:in .18s ease-out}@keyframes in{from{opacity:.4;transform:translateY(3px)}}}
 @media (prefers-reduced-motion:reduce){.dot.listen,.ib.live{animation:none}}
+
+/* ---------- Версия 3 ---------- */
+.dot.busy{background:var(--accent);animation:pulse 1.2s ease-in-out infinite}
+.msg .by span{text-transform:none;letter-spacing:0;opacity:.8}
+.msg.temp{opacity:.75}
+.msg .answer{margin-top:8px;padding-top:8px;border-top:1px dashed var(--line)}
+.memnote{margin-top:6px;font-size:12.5px;color:var(--muted)}
+.pill.on{border-color:var(--accent);color:var(--accent);background:var(--accent-soft)}
+.why{margin-top:8px}
+.modes{display:flex;gap:6px;overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:none;
+  padding:6px max(10px,env(safe-area-inset-right,0px)) 2px max(10px,env(safe-area-inset-left,0px));border-top:1px solid var(--line)}
+.modes::-webkit-scrollbar{display:none}
+.chip{flex:none;background:var(--bg);border:1px solid var(--line);border-radius:999px;padding:4px 11px;font-size:13px;color:var(--muted);white-space:nowrap}
+.chip.on{background:var(--accent);border-color:var(--accent);color:var(--on-accent)}
+.modes .sep{flex:none;width:1px;background:var(--line);margin:2px 2px}
+.seg{display:flex;border:1px solid var(--line);border-radius:10px;overflow:hidden;background:var(--surface)}
+.seg button{flex:1;background:none;border:0;padding:9px 6px;font-size:14px;color:var(--muted)}
+.seg button[aria-pressed="true"]{background:var(--accent-soft);color:var(--accent);font-weight:600}
+.field textarea{border:1px solid var(--line);background:var(--bg);border-radius:10px;padding:9px 11px;width:100%;resize:vertical;font-size:16px}
+.primary-btn{background:var(--accent)!important;color:var(--on-accent)!important;border-color:var(--accent)!important}
+.row-btns button:disabled{opacity:.55}
+details.field summary{cursor:pointer;font-weight:500;list-style:none;display:flex;gap:6px;align-items:baseline;flex-wrap:wrap}
+details.field summary::-webkit-details-marker{display:none}
+details.field summary::before{content:"›";display:inline-block;width:10px;color:var(--muted);transition:transform .15s}
+details.field[open] summary::before{transform:rotate(90deg)}
+details.field[open] summary{margin-bottom:6px}
+.ok-mark{color:var(--ok);font-weight:700}
+.row details summary{cursor:pointer}
+.pre{white-space:pre-wrap;margin-top:6px}
+
+.talk{position:fixed;inset:0;z-index:30;background:var(--bg);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;
+  padding:calc(16px + env(safe-area-inset-top,0px)) max(20px,env(safe-area-inset-right,0px)) calc(24px + env(safe-area-inset-bottom,0px)) max(20px,env(safe-area-inset-left,0px));text-align:center}
+.talk-top{position:absolute;top:calc(12px + env(safe-area-inset-top,0px));left:max(16px,env(safe-area-inset-left,0px));right:max(16px,env(safe-area-inset-right,0px));display:flex;justify-content:space-between;align-items:center;color:var(--muted);font-size:13px}
+.x.big{font-size:30px;opacity:.7;padding:4px 10px}
+.orb{position:relative;width:min(56vw,230px);aspect-ratio:1;max-width:100%;border-radius:50%;border:0;background:var(--accent);background:radial-gradient(circle at 35% 30%,color-mix(in srgb,var(--accent) 55%,var(--surface)),var(--accent));box-shadow:0 10px 40px color-mix(in srgb,var(--accent) 35%,transparent)}
+.orb-ring{position:absolute;inset:-14px;border-radius:50%;border:2px solid var(--accent);opacity:.35;transition:transform .08s linear}
+.talk[data-phase="thinking"] .orb,.talk[data-phase="transcribing"] .orb{animation:breathe 1.6s ease-in-out infinite}
+.talk[data-phase="speaking"] .orb-ring{animation:ripple 1.4s ease-out infinite}
+.talk[data-phase="idle"] .orb{filter:saturate(.4)}
+@keyframes breathe{50%{transform:scale(.92)}}
+@keyframes ripple{from{transform:scale(1);opacity:.5}to{transform:scale(1.35);opacity:0}}
+.talk-state{margin:0;font-size:19px;font-weight:600}
+.talk-text{margin:0;max-width:34ch;color:var(--muted);font-size:15px;max-height:30vh;overflow-y:auto}
+.talk-hint{max-width:34ch}
+@media (prefers-reduced-motion:reduce){.talk .orb,.talk .orb-ring{animation:none!important}}
+#diag .due{font-family:inherit;font-size:13.5px}

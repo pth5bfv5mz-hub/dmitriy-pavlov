@@ -1,6 +1,6 @@
 /* Офлайн-оболочка: приложение открывается даже без сети; запросы к нейросетям идут мимо кэша. */
-const CACHE = "dp-v2.1.0";
-const SHELL = ["./", "index.html", "style.css", "app.js", "guide.html", "manifest.webmanifest", "icons/icon-192.png", "icons/icon-512.png", "icons/apple-touch-icon.png"];
+const CACHE = "dp-v3.0.0";
+const SHELL = ["./", "index.html", "style.css", "js/main.js", "js/util.js", "js/store.js", "js/brains.js", "js/memory.js", "js/knowledge.js", "js/prompt.js", "js/voice.js", "guide.html", "manifest.webmanifest", "icons/icon-192.png", "icons/icon-512.png", "icons/apple-touch-icon.png"];
 self.addEventListener("install", e => { e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL)).then(() => self.skipWaiting())); });
 self.addEventListener("activate", e => {
   e.waitUntil(caches.keys().then(keys => Promise.all(keys.filter(k => k !== CACHE).map(k => caches.delete(k)))).then(() => self.clients.claim()));
