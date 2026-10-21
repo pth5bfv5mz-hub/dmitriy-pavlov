@@ -121,7 +121,28 @@ body[data-tab="mem"] #v-mem,body[data-tab="set"] #v-set,body[data-tab="know"] #v
 .toast button{background:none;border:1px solid currentColor;color:inherit;border-radius:8px;padding:4px 10px;font-size:14px;flex:none}
 
 @media (prefers-reduced-motion:no-preference){.msg{animation:in .18s ease-out}@keyframes in{from{opacity:.4;transform:translateY(3px)}}}
-@media (prefers-reduced-motion:reduce){.dot.listen,.ib.live{animation:none}}
+.voicebar{display:flex;align-items:center;gap:10px;margin:0 10px 8px;padding:10px 10px 10px 14px;border-radius:16px;
+  background:var(--surface);border:1.5px solid var(--warn);box-shadow:0 2px 10px rgba(0,0,0,.08)}
+.voicebar[hidden]{display:none}
+.vb-level{display:flex;align-items:center;gap:3px;height:28px;flex:none}
+.vb-level i{display:block;width:4px;height:6px;border-radius:2px;background:var(--warn);transition:height .08s linear}
+.vb-text{flex:1;min-width:0;display:flex;flex-direction:column;line-height:1.25}
+.vb-text b{font-size:15px;font-weight:600}
+.vb-text span{font-size:12.5px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.vb-time{font-family:var(--font-mono);font-size:13px;color:var(--muted);flex:none}
+.vb-x{width:36px;height:36px;flex:none;border-radius:50%;border:1px solid var(--line);background:var(--bg);color:var(--muted);font-size:15px}
+.vb-done{flex:none;height:38px;padding:0 16px;border-radius:19px;border:0;background:var(--accent);color:var(--on-accent);font-weight:600;font-size:15px}
+.voicebar[data-st="starting"] .vb-level i{opacity:.35}
+.voicebar[data-st="transcribing"]{border-color:var(--accent)}
+.voicebar[data-st="transcribing"] .vb-level i{background:var(--accent);animation:vbwave 1s ease-in-out infinite}
+.voicebar[data-st="transcribing"] .vb-level i:nth-child(2){animation-delay:.1s}
+.voicebar[data-st="transcribing"] .vb-level i:nth-child(3){animation-delay:.2s}
+.voicebar[data-st="transcribing"] .vb-level i:nth-child(4){animation-delay:.3s}
+.voicebar[data-st="transcribing"] .vb-level i:nth-child(5){animation-delay:.4s}
+.voicebar[data-st="transcribing"] .vb-done,.voicebar[data-st="transcribing"] .vb-time,.voicebar[data-st="miss"] .vb-done{display:none}
+.voicebar[data-st="miss"]{border-color:var(--line)}
+@keyframes vbwave{0%,100%{height:6px}50%{height:20px}}
+@media (prefers-reduced-motion:reduce){.dot.listen,.ib.live,.voicebar .vb-level i{animation:none}}
 
 /* ---------- Версия 3 ---------- */
 .dot.busy{background:var(--accent);animation:pulse 1.2s ease-in-out infinite}

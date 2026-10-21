@@ -9,7 +9,7 @@ import { relevantFacts, activeFacts, applyActions, stripActions, extractActions,
 import { addDoc, removeDoc, search, fromUrl, fromFile, ensureDocVecs, docsForPrompt } from "./knowledge.js";
 import * as V from "./voice.js";
 
-const VERSION = "3.6.0";
+const VERSION = "3.6.1";
 let mode = "auto", deep = false, photo = null, busy = null;
 
 /* =================== Часы и статус =================== */
@@ -179,7 +179,7 @@ async function send(text, opts = {}) {
   if (!text && img) text = "Посмотри на фото и помоги.";
   if (!text) return "";
   if (busy) busy.abort();
-  if (!opts.voice) { V.stopSpeaking(); V.stopRecording(true); }
+  if (!opts.voice) { V.stopSpeaking(); if (micSt !== "idle") { micGen++; vbSet("idle"); } V.stopRecording(true); }
   setTab("chat");
   const temp = !!D.meta.tempChat;
   if (!opts.retry) {
@@ -323,19 +323,53 @@ function voiceErr(e) {
   return explain(e);
 }
 function showHint(t) { $("#hint").textContent = t || ""; $("#hint").hidden = !t; }
+/* Панель записи: видно, слушает ли Дмитрий, слышит ли голос, когда распознаёт. */
+let micSt = "idle", micT0 = 0, micTimer = 0, micGen = 0;
+function vbSet(st, title, sub) {
+  micSt = st; const bar = $("#voiceBar");
+  bar.hidden = st === "idle"; bar.dataset.st = st;
+  $("#mic").classList.toggle("live", st === "starting" || st === "listening" || st === "heard");
+  if (title) $("#vbTitle").textContent = title;
+  $("#vbSub").textContent = sub || "";
+  if (st === "listening" && !micTimer) { micT0 = Date.now(); micTimer = setInterval(() => { const sec = Math.floor((Date.now() - micT0) / 1000); $("#vbTime").textContent = Math.floor(sec / 60) + ":" + pad(sec % 60); }, 250); }
+  if (st !== "listening" && st !== "heard") { clearInterval(micTimer); micTimer = 0; }
+  if (st === "starting") $("#vbTime").textContent = "0:00";
+}
+const BARS = [0.5, 0.8, 1, 0.8, 0.5];
+function vbLevel(v) { $$("#voiceBar .vb-level i").forEach((el, i) => { el.style.height = Math.round(6 + v * 22 * BARS[i]) + "px"; }); }
+function micStop(cancel) { if (micSt === "starting" || micSt === "listening" || micSt === "heard") V.stopRecording(cancel); }
+$("#vbDone").onclick = () => { V.unlock(); micStop(false); };
+$("#vbCancel").onclick = () => {
+  if (micSt === "transcribing") { micGen++; vbSet("idle"); idleStatus(); return; }   // распознанное просто не отправим
+  micGen++; micStop(true); vbSet("idle"); idleStatus();
+};
 $("#mic").onclick = async () => {
   V.unlock();
-  if (V.isRecording()) { V.stopRecording(); return; }
-  V.stopSpeaking(); syncSendBtn();
-  $("#mic").classList.add("live"); status("Слушаю…", "listen"); showHint("");
+  if (micSt === "transcribing") { toast("Секунду — распознаю сказанное…", 1500); return; }
+  if (micSt !== "idle" && micSt !== "miss") { micStop(false); return; }   // второе нажатие = «Готово, отправляй»
+  const gen = ++micGen;
+  V.stopSpeaking(); syncSendBtn(); showHint("");
+  vbSet("starting", "Включаю микрофон…"); vbLevel(0); status("Слушаю…", "listen");
+  V.beep(660, 1);
   try {
-    const text = await V.listen({ onInterim: t => { $("#input").value = t; autosize(); }, onTranscribing: () => status("Распознаю…", "busy") });
-    $("#mic").classList.remove("live"); idleStatus();
-    if (!text) { showHint("Не расслышал. Нажми 🎤 и скажи ещё раз."); return; }
+    const text = await V.listen({
+      onStart: () => { if (gen === micGen) vbSet("listening", "Слушаю — говори", "Закончишь — я сам отправлю. Или нажми «Готово»"); },
+      onSpeech: () => { if (gen === micGen) vbSet("heard", "Слышу тебя…", "Договори — пауза, и я отправлю"); },
+      onLevel: v => { if (gen === micGen) vbLevel(v); },
+      onInterim: t => { $("#input").value = t; autosize(); },
+      onTranscribing: () => { if (gen === micGen) { V.beep(440, 1); vbSet("transcribing", "Распознаю…", "Сейчас отправлю"); status("Распознаю…", "busy"); } },
+    });
+    if (gen !== micGen) return;     // отменено
+    if (!text) {
+      vbSet("miss", "Не услышал тебя", "Нажми 🎤 и скажи ещё раз — громче или ближе к телефону");
+      idleStatus(); setTimeout(() => { if (gen === micGen && micSt === "miss") vbSet("idle"); }, 4000);
+      return;
+    }
+    vbSet("idle"); idleStatus();
     // Сказал голосом — отвечаю голосом, коротко, как в живой беседе (текст тоже остаётся на экране)
     $("#input").value = ""; autosize();
     send(text, { voice: true }).catch(e => { V.speak(e.spoken || explain(e), { force: true }); });
-  } catch (e) { $("#mic").classList.remove("live"); idleStatus(); showHint(voiceErr(e)); }
+  } catch (e) { if (gen === micGen) { vbSet("idle"); idleStatus(); showHint(voiceErr(e)); } }
 };
 
 /* =================== Голос: разговор =================== */
@@ -447,12 +481,17 @@ function sendToIOS(t) {
 function addToCalendar(t) {
   const d = new Date(t.due), e = new Date(t.due + 15 * 6e4);
   const f = x => `${x.getFullYear()}${pad(x.getMonth() + 1)}${pad(x.getDate())}T${pad(x.getHours())}${pad(x.getMinutes())}00`;
+  const title = t.text.replace(/[,;\\]/g, " ").replace(/\s+/g, " ").trim();
+  const alarm = (trig) => ["BEGIN:VALARM", `X-WR-ALARMUID:${t.id}${trig}`, `UID:${t.id}${trig}`, `TRIGGER:${trig}`, `DESCRIPTION:${title}`, "ACTION:DISPLAY", "END:VALARM"];
   const rr = { daily: "FREQ=DAILY", weekdays: "FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR", weekly: "FREQ=WEEKLY", monthly: "FREQ=MONTHLY", yearly: "FREQ=YEARLY" }[t.repeat];
-  const ics = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//DmitriyPavlov//RU", "BEGIN:VEVENT", `UID:${t.id}@dmitriy-pavlov`, `DTSTAMP:${f(new Date())}`, `DTSTART:${f(d)}`, `DTEND:${f(e)}`,
-    `SUMMARY:${t.text.replace(/[,;\\]/g, " ")}`, ...(rr ? ["RRULE:" + rr] : []), "BEGIN:VALARM", "ACTION:DISPLAY", "DESCRIPTION:Напоминание", "TRIGGER:PT0M", "END:VALARM", "END:VEVENT", "END:VCALENDAR"].join("\r\n");
+  const ics = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//DmitriyPavlov//RU", "BEGIN:VEVENT", `UID:${t.id}@dmitriy-pavlov`, `DTSTAMP:${new Date().toISOString().replace(/[-:]/g, "").slice(0, 15)}Z`, `DTSTART:${f(d)}`, `DTEND:${f(e)}`,
+    `SUMMARY:${title}`, ...(rr ? ["RRULE:" + rr] : []),
+    // Оповещение в формате, который пишет сам Календарь Apple: в момент события + за 10 минут
+    ...alarm("-PT0S"), ...alarm("-PT10M"), "END:VEVENT", "END:VCALENDAR"].join("\r\n");
   const url = URL.createObjectURL(new Blob([ics], { type: "text/calendar;charset=utf-8" }));
   const a = document.createElement("a"); a.href = url; a.download = "napominanie.ics"; document.body.append(a); a.click(); a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 6e4);
+  toast("Нажми «Добавить» в календаре. Оповещения: в момент события и за 10 минут.", 4000);
 }
 function checkReminders() {
   const now = Date.now(); let changed = false;
@@ -759,6 +798,8 @@ try { speechSynthesis.onvoiceschanged = fillVoices; } catch {}
 V.onSpeakingChange(syncSendBtn);
 setInterval(() => { checkReminders(); syncSendBtn(); }, 10000); checkReminders();
 if (S.geminiKey) discoverGemini().then(fillGeminiModels).catch(() => {});
-document.addEventListener("visibilitychange", () => { if (!document.hidden) checkReminders(); else if (!talkOn) V.stopRecording(true); });
+document.addEventListener("visibilitychange", () => { if (!document.hidden) { checkReminders(); V.audioCtx(); } else if (!talkOn) { micGen++; V.stopRecording(true); vbSet("idle"); } });
+// Любое касание экрана «будит» звук: iPhone разрешает играть звук только после касания
+["touchend", "click"].forEach(ev => document.addEventListener(ev, () => V.unlock(), { capture: true, passive: true }));
 if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
-window.__dp = { D, S, send };   // для отладки
+window.__dp = { D, S, send, addToCalendar };   // для отладки

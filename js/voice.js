@@ -18,9 +18,20 @@ export function audioCtx() {
   if (actx && actx.state !== "running" && actx.state !== "closed") actx.resume().catch(() => {});
   return actx;
 }
+/* Плеер для речи. На iPhone обычный аудиоплеер надёжнее Web Audio: его не глушит переключатель
+   беззвучного режима, и он не «засыпает» после микрофона. Но играть он может, только если хоть раз
+   запущен касанием, — поэтому «будим» его при каждом касании экрана (тихим звуком, пока он свободен). */
+let mel = null, melReady = false;
+const SILENT = "data:audio/wav;base64,UklGRl4RAABXQVZFZm10IBAAAAABAAEAIlYAAESsAAACABAAZGF0YToRAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+function mediaEl() {
+  if (!mel) { mel = new Audio(); mel.preload = "auto"; mel.setAttribute("playsinline", ""); mel.setAttribute("webkit-playsinline", ""); }
+  return mel;
+}
 let unlocked = false;
 export function unlock() {   // iOS: звук и речь — только после касания
   audioCtx();
+  const m = mediaEl();
+  if (!(playing && playing.m === m)) { try { m.src = SILENT; m.play().then(() => { melReady = true; }, () => {}); } catch {} }
   if (unlocked) return; unlocked = true;
   try { const u = new SpeechSynthesisUtterance(" "); u.volume = 0; speechSynthesis.speak(u); } catch {}
   try { const c = audioCtx(); const b = c.createBuffer(1, 1, 22050); const s = c.createBufferSource(); s.buffer = b; s.connect(c.destination); s.start(0); } catch {}
@@ -44,7 +55,7 @@ let current = null;  // активная запись
 export const isRecording = () => !!current;
 export function stopRecording(cancel) { if (current) current.stop(cancel); }
 
-export function record({ onLevel, onSpeech, maxMs = 60000, silenceMs = 1300, noSpeechMs = 9000, vad = true } = {}) {
+export function record({ onLevel, onSpeech, onStart, maxMs = 60000, silenceMs = 1300, noSpeechMs = 9000, vad = true } = {}) {
   return new Promise(async (resolve, reject) => {
     if (current) current.stop(true);
     // Пока iPhone спрашивает разрешение на микрофон, запись уже можно отменить
@@ -73,7 +84,7 @@ export function record({ onLevel, onSpeech, maxMs = 60000, silenceMs = 1300, noS
     // Анализ громкости. Уровень шума — по самым тихим моментам (человек часто начинает говорить сразу),
     // порог речи = шум × 3, но в разумных пределах.
     const c = audioCtx();
-    const t0 = performance.now(); let floor = 0.01, lastVoice = 0, heard = false;
+    const t0 = performance.now(); let floor = 0.01, lastVoice = 0, heard = false, peak = 0;
     try {
       src = c.createMediaStreamSource(stream); an = c.createAnalyser(); an.fftSize = 1024; src.connect(an);
       const buf = new Float32Array(an.fftSize);
@@ -85,11 +96,14 @@ export function record({ onLevel, onSpeech, maxMs = 60000, silenceMs = 1300, noS
         const t = performance.now() - t0;
         if (rms > 0) floor = rms < floor ? rms : Math.min(0.03, floor + (rms - floor) * 0.002);
         const thr = Math.min(0.06, Math.max(0.012, floor * 3));
-        if (rms > thr) { if (!spoke) { spoke = true; onSpeech && onSpeech(); } lastVoice = t; }
+        if (t > 300) peak = Math.max(peak, rms);
+        // первые 0,3 с не считаем речью: там сигнал начала записи и щелчок микрофона
+        if (rms > thr && t > 300) { if (!spoke) { spoke = true; onSpeech && onSpeech(); } lastVoice = t; }
         onLevel && onLevel(Math.min(1, rms / (thr * 3)));
         if (vad && spoke && t - lastVoice > silenceMs) return finish();
         // «Тишина» засчитывается, только если анализатор вообще что-то слышит (иначе звук не запущен — не выбрасываем запись)
-        if (vad && !spoke && heard && t > noSpeechMs) { cancelled = true; return finish(); }
+        // Если что-то было слышно, но тихо (порог не пройден) — всё равно отдаём на распознавание, а не выбрасываем
+        if (vad && !spoke && heard && t > noSpeechMs) { cancelled = !(peak > 0.005 && peak > floor * 1.8); return finish(); }
         if (t > maxMs) return finish();
         raf = setTimeout(tick, 50);
       };
@@ -98,19 +112,21 @@ export function record({ onLevel, onSpeech, maxMs = 60000, silenceMs = 1300, noS
     mr.onstop = cleanup;
     const rec = { stop: cancel => { if (cancel) cancelled = true; finish(); } };
     current = rec;
-    try { mr.start(250); } catch (e) { cleanup(); reject(e); }
+    try { mr.start(250); onStart && onStart(); } catch (e) { cleanup(); reject(e); }
     timer = setTimeout(finish, maxMs + 500);
   });
 }
 
 /* Встроенное распознавание (работает во вкладке Safari, не всегда — в приложении). */
-function listenSR({ onInterim } = {}) {
+function listenSR(opts = {}) {
+  const { onInterim } = opts;
   return new Promise((resolve, reject) => {
     const r = new SR(); r.lang = "ru-RU"; r.interimResults = true; r.continuous = false;
     let fin = "";
     r.onresult = e => { let it = ""; fin = ""; for (const x of e.results) (x.isFinal ? fin += x[0].transcript : it += x[0].transcript); onInterim && onInterim((fin + " " + it).trim()); };
     r.onerror = e => reject(new Error(e.error === "not-allowed" ? "mic-denied" : "sr-" + e.error));
     r.onend = () => resolve(fin.trim());
+    r.onstart = () => opts.onStart && opts.onStart();
     current = { stop: cancel => { try { cancel ? r.abort() : r.stop(); } catch {} } };
     try { r.start(); } catch (e) { reject(e); }
   }).finally(() => { current = null; });
@@ -212,7 +228,9 @@ export function createSpeaker({ limit = 0 } = {}) {
         catch (e) {
           if (my !== token) return;
           const offAudio = e && e.message === "audio-off";
-          if (engine === "local" && !offAudio) { localCooldown = Date.now() + 5 * 6e4; if (e && e.message === "not-downloaded") localOK = false; }
+          // Сбой синтеза на телефоне — сначала один повтор этой же фразы, и только потом голос iPhone
+          if (engine === "local" && !offAudio && !seg.retried && !(e && e.message === "not-downloaded")) { seg.retried = true; ask(seg); i--; continue; }
+          if (engine === "local" && !offAudio) { localCooldown = Date.now() + 2 * 6e4; if (e && e.message === "not-downloaded") localOK = false; }
           if (engine === "live" && !offAudio) liveCooldown = Date.now() + 10 * 6e4;   // лимит или сбой — 10 минут без живого голоса
           // дальше — голосом iPhone, без повторного заказа звука
           engine = "ios"; segs.forEach((s, j) => { if (j > i) s.audio = null; });
@@ -228,24 +246,38 @@ export function createSpeaker({ limit = 0 } = {}) {
   };
 }
 const sleep = ms => new Promise(r => setTimeout(r, ms));
+/* Готовый звук → WAV для аудиоплеера. */
+function wavBlob(pcm, rate) {
+  const n = pcm.length, buf = new ArrayBuffer(44 + n * 2), v = new DataView(buf);
+  const w = (o, t) => { for (let i = 0; i < t.length; i++) v.setUint8(o + i, t.charCodeAt(i)); };
+  w(0, "RIFF"); v.setUint32(4, 36 + n * 2, true); w(8, "WAVE"); w(12, "fmt "); v.setUint32(16, 16, true);
+  v.setUint16(20, 1, true); v.setUint16(22, 1, true); v.setUint32(24, rate, true); v.setUint32(28, rate * 2, true);
+  v.setUint16(32, 2, true); v.setUint16(34, 16, true); w(36, "data"); v.setUint32(40, n * 2, true);
+  for (let i = 0; i < n; i++) { const x = Math.max(-1, Math.min(1, pcm[i])); v.setInt16(44 + i * 2, x < 0 ? x * 32768 : x * 32767, true); }
+  return new Blob([buf], { type: "audio/wav" });
+}
+/* Разобрать ответ голосового движка: { pcm, rate } (на телефоне) или { mime, b64 } (Gemini). */
+function decodeSrc(a) {
+  if (a.pcm) return { pcm: a.pcm, rate: a.rate };
+  const bytes = Uint8Array.from(atob(a.b64), ch => ch.charCodeAt(0));
+  if (/wav|mpeg|mp3|ogg|aac|mp4/i.test(a.mime)) return { bytes, mime: a.mime.split(";")[0] };
+  const rate = +(a.mime.match(/rate=(\d+)/) || [0, 24000])[1];   // audio/L16;rate=24000 — 16-битный PCM
+  const n = Math.floor(bytes.length / 2), dv = new DataView(bytes.buffer), pcm = new Float32Array(n);
+  for (let i = 0; i < n; i++) pcm[i] = dv.getInt16(i * 2, true) / 32768;
+  return { pcm, rate };
+}
 async function playAudio(a, my) {
+  const src = decodeSrc(a);
+  if (my !== token) return;
+  // 1) Аудиоплеер (главный путь на iPhone)
+  try { await playEl(src, my); return; } catch (e) { if (my !== token) return; }
+  // 2) Web Audio
   const c = audioCtx();
   if (c.state !== "running") { try { await Promise.race([c.resume(), sleep(800)]); } catch {} }
   if (c.state !== "running") throw new Error("audio-off");   // звук не запустился — пусть говорит iPhone
   let buf;
-  if (a.pcm) {   // голос на телефоне: готовые отсчёты
-    buf = c.createBuffer(1, a.pcm.length, a.rate); buf.getChannelData(0).set(a.pcm);
-  } else {
-    const bytes = Uint8Array.from(atob(a.b64), ch => ch.charCodeAt(0));
-    if (/wav|mpeg|mp3|ogg|aac|mp4/i.test(a.mime)) {
-      buf = await new Promise((res, rej) => c.decodeAudioData(bytes.buffer.slice(0), res, rej));
-    } else {   // audio/L16;rate=24000 — 16-битный PCM
-      const rate = +(a.mime.match(/rate=(\d+)/) || [0, 24000])[1];
-      const n = Math.floor(bytes.length / 2), dv = new DataView(bytes.buffer);
-      buf = c.createBuffer(1, n, rate); const ch = buf.getChannelData(0);
-      for (let i = 0; i < n; i++) ch[i] = dv.getInt16(i * 2, true) / 32768;
-    }
-  }
+  if (src.pcm) { buf = c.createBuffer(1, src.pcm.length, src.rate); buf.getChannelData(0).set(src.pcm); }
+  else buf = await new Promise((res, rej) => c.decodeAudioData(src.bytes.buffer.slice(0), res, rej));
   if (my !== token) return;
   await new Promise(resolve => {
     const s = c.createBufferSource(); s.buffer = buf; s.connect(c.destination);
@@ -255,6 +287,33 @@ async function playAudio(a, my) {
     s.onended = end;
     setPlaying({ s, stop: () => { try { s.stop(); } catch {} end(); } });
     s.start(0);
+  });
+}
+function playEl(src, my) {
+  const m = mediaEl();
+  const blob = src.pcm ? wavBlob(src.pcm, src.rate) : new Blob([src.bytes], { type: src.mime });
+  const url = URL.createObjectURL(blob);
+  const sec = src.pcm ? src.pcm.length / src.rate : 60;
+  return new Promise((resolve, reject) => {
+    let fin = false, started = false;
+    const end = err => {
+      if (fin) return; fin = true; clearTimeout(dog); clearTimeout(startDog);
+      m.onended = m.onerror = m.onplaying = null;
+      if (playing && playing.m === m) setPlaying(null);
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      err ? reject(err) : resolve();
+    };
+    // Не начал играть за 2,5 с — плеер заблокирован: переходим на запасной путь
+    const startDog = setTimeout(() => { if (!started) { try { m.pause(); } catch {} end(new Error("el-stuck")); } }, 2500);
+    const dog = setTimeout(() => end(), sec * 1000 + 4000);
+    m.onplaying = () => { started = true; clearTimeout(startDog); };
+    m.onended = () => end();
+    m.onerror = () => end(started ? null : new Error("el-error"));
+    setPlaying({ m, stop: () => { try { m.pause(); } catch {} end(); } });
+    try { m.src = url; m.volume = 1; } catch (e) { return end(e); }
+    const p = m.play();
+    if (p && p.then) p.then(() => { started = true; clearTimeout(startDog); melReady = true; }, e => end(new Error("el-blocked")));
+    if (my !== token) end();
   });
 }
 let iosVoices = [];

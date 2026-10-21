@@ -32,6 +32,13 @@
       <div class="log" id="log" aria-live="polite"></div>
       <div class="modes" id="modes" role="toolbar" aria-label="Режим"></div>
       <div class="hint" id="hint" hidden></div>
+      <div class="voicebar" id="voiceBar" data-st="starting" hidden role="status" aria-live="polite">
+        <div class="vb-level" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></div>
+        <div class="vb-text"><b id="vbTitle">Включаю микрофон…</b><span id="vbSub"></span></div>
+        <span class="vb-time" id="vbTime">0:00</span>
+        <button type="button" class="vb-x" id="vbCancel" aria-label="Отменить запись">✕</button>
+        <button type="button" class="vb-done" id="vbDone">Готово</button>
+      </div>
       <div class="photo-prev" id="photoPrev" hidden><img id="photoImg" alt="Фото к сообщению"><span>Фото прикреплено</span><button type="button" class="x" id="photoDel" aria-label="Убрать фото">×</button></div>
       <form class="composer" id="form">
         <input type="file" id="photo" accept="image/*" hidden>
