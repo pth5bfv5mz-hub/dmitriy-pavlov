@@ -75,15 +75,21 @@ async function readSSE(res, onEvent, signal) {
    ===================================================================== */
 const G = "https://generativelanguage.googleapis.com/v1beta";
 const gkey = () => encodeURIComponent(S.geminiKey.trim());
+// Модели с бесплатной квотой у новых ключей (октябрь 2026). Новейшие (3.x) и псевдонимы *-latest
+// дают новым ключам лимит 0, поэтому их НЕ ставим вперёд — сначала проверенно-бесплатные 2.x.
+const FREE_CHAT = ["gemini-2.5-flash", "gemini-2.0-flash"];
+const FREE_LITE = ["gemini-2.5-flash-lite", "gemini-2.0-flash-lite"];
 const STATIC = {
-  chat: ["gemini-flash-latest", "gemini-3.8-flash", "gemini-3.6-flash", "gemini-2.5-flash"],
-  deep: ["gemini-pro-latest", "gemini-3.8-pro", "gemini-2.5-pro"],
-  lite: ["gemini-flash-lite-latest", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-2.5-flash-lite"],
-  tts: ["gemini-3.8-flash-tts", "gemini-3.8-flash-lite-tts", "gemini-2.5-flash-preview-tts"],
+  chat: [...FREE_CHAT, "gemini-flash-latest"],
+  deep: ["gemini-2.5-pro", "gemini-pro-latest"],
+  lite: [...FREE_LITE, "gemini-flash-lite-latest"],
+  tts: ["gemini-2.5-flash-preview-tts", "gemini-2.5-flash-tts", "gemini-3.8-flash-tts"],
   embed: ["gemini-embedding-001", "gemini-embedding-2"],
 };
 const ver = n => (n.match(/(\d+(?:\.\d+)?)/) || [0, 0])[1] * 1;
 const byVer = (a, b) => ver(b) - ver(a) || a.length - b.length;
+// Для бесплатного ключа ставим вперёд проверенно-бесплатные модели, новейшие — в конец.
+const freeFirst = (ids, free) => [...free.filter(id => ids.includes(id)), ...ids.filter(id => !free.includes(id) && !/latest/.test(id)), ...ids.filter(id => /latest/.test(id))];
 /* Спрашиваем у Google, какие модели доступны этому ключу, и раскладываем по ролям.
    Так Дмитрий не сломается, когда Google переименует модели. */
 export async function discoverGemini(force) {
@@ -103,12 +109,17 @@ export async function discoverGemini(force) {
     };
     const models = {
       at: Date.now(),
-      chat: pick(/flash(?!-lite)/, "gemini-flash-latest"),
-      deep: pick(/pro/, "gemini-pro-latest"),
-      lite: pick(/flash-lite/, "gemini-flash-lite-latest"),
+      chat: freeFirst(pick(/flash(?!-lite)/, "gemini-flash-latest"), FREE_CHAT),
+      deep: pick(/pro/, "gemini-pro-latest"),   // «Глубже» — пусть берёт лучшую (с billing); на free упадёт на flash
+      lite: freeFirst(pick(/flash-lite/, "gemini-flash-lite-latest"), FREE_LITE),
       tts: gen.filter(m => /tts/.test(m.id)).map(m => m.id).sort((a, b) => (/lite/.test(a) - /lite/.test(b)) || (/preview/.test(a) - /preview/.test(b)) || byVer(a, b)),
       embed: all.filter(m => m.methods.includes("embedContent") && /embedding/.test(m.id)).map(m => m.id).sort((a, b) => (b === "gemini-embedding-001") - (a === "gemini-embedding-001")),
     };
+    // Проверенно-бесплатные модели держим в списке даже если их нет в ответе — вдруг ключу они доступны
+    FREE_CHAT.forEach(id => { if (!models.chat.includes(id)) models.chat.push(id); });
+    FREE_LITE.forEach(id => { if (!models.lite.includes(id)) models.lite.push(id); });
+    models.chat = freeFirst(models.chat, FREE_CHAT);
+    models.lite = freeFirst(models.lite, FREE_LITE);
     if (!models.chat.length) models.chat = STATIC.chat;
     D.meta.models = models; persist();
     return models;
@@ -170,13 +181,16 @@ async function gStream(model, body, onText, signal) {
   return { text, sources, model };
 }
 let searchOffUntil = 0;   // кончился отдельный бесплатный лимит поиска Google — отвечаем без поиска
-async function chatGemini({ system, hist, img, onText, signal, deep }) {
+// Поиск Google у бесплатного ключа — крошечная отдельная квота (~500/день, только на 2.5-flash).
+// Поэтому включаем его ТОЛЬКО когда вопрос явно про свежее/внешнее, а не на каждый «привет».
+const FRESH_RE = /новост|сейчас|сегодня|завтра|вчера|текущ|погод|курс|котировк|цен[аыу]|сколько стоит|стоит ли|прогноз|расписан|когда (выйд|будет|состо|начн|откро)|последн|актуальн|свеж|нынешн|202[4-9]|203\d|кто (сейчас|выиграл|победил|президент|глава)|результат|счёт матч|кто такой|что такое|where|погугли|найди|поищи|в интернете|ссылк|http/i;
+async function chatGemini({ system, hist, img, onText, signal, deep, wantSearch }) {
   const base = { system_instruction: { parts: [{ text: system }] }, contents: gContents(hist, img), generationConfig: { temperature: deep ? 0.4 : 0.6 } };
   let last; const tried = []; let rateHits = 0;
-  // Поиск Google — отдельная, очень маленькая бесплатная квота. Поэтому: сначала пробуем с поиском,
-  // но при ЛЮБОМ отказе с поиском сразу переходим на ответ без поиска той же моделью, а не долбим квоту.
-  const withSearch = Date.now() > searchOffUntil;
-  const toolSets = withSearch ? [[{ google_search: {} }, { url_context: {} }], undefined] : [undefined];
+  const lastUser = [...hist].reverse().find(h => h.role === "user");
+  const needSearch = !img && Date.now() > searchOffUntil && (wantSearch || FRESH_RE.test(lastUser ? lastUser.text : ""));
+  // При любом отказе с поиском сразу отвечаем той же моделью без поиска, а не долбим квоту.
+  const toolSets = needSearch ? [[{ google_search: {} }, { url_context: {} }], undefined] : [undefined];
   for (const model of await gModels(deep ? "deep" : "chat")) {
     for (let ti = 0; ti < toolSets.length; ti++) {
       const tools = toolSets[ti];
@@ -335,6 +349,23 @@ async function runTool(call, sources) {
     return await toolWebSearch(String(a.query || ""), sources);
   } catch (e) { return "Ошибка инструмента: " + e.message; }
 }
+// Mistral и Z.ai на бесплатном плане: 1 запрос в секунду. Разносим вызовы, чтобы не ловить 429.
+const lastCall = {};
+async function spacedFetch(brain, url, opts, signal) {
+  const gap = 1100, since = Date.now() - (lastCall[brain] || 0);
+  if (since < gap) await sleep(gap - since);
+  for (let attempt = 0; attempt < 3; attempt++) {
+    lastCall[brain] = Date.now();
+    const res = await fetch(url, opts);
+    if (res.status === 429 && attempt < 2) {
+      const ra = +(res.headers.get("retry-after") || 0);
+      await sleep(ra ? ra * 1000 : 1500 * (attempt + 1));
+      if (signal && signal.aborted) throw new DOMException("aborted", "AbortError");
+      continue;
+    }
+    return res;
+  }
+}
 async function chatCompat(brain, { system, hist, img, onText, onStatus, signal }) {
   const c = COMPAT[brain]();
   const messages = [{ role: "system", content: system }, ...hist.map(h => ({ role: h.role, content: h.text }))];
@@ -343,12 +374,7 @@ async function chatCompat(brain, { system, hist, img, onText, onStatus, signal }
   for (let round = 0; round < 5; round++) {
     const body = { model: img ? c.vision : c.model, messages, temperature: 0.5 };
     if (round < 4) body.tools = TOOLS;
-    let res;
-    for (let attempt = 0; attempt < 2; attempt++) {
-      res = await fetch(c.url, { method: "POST", signal, headers: { "Content-Type": "application/json", "Authorization": "Bearer " + c.key.trim() }, body: JSON.stringify(body) });
-      if (res.status === 429 && attempt === 0) { await sleep(1500); continue; }   // бесплатные планы: 1 запрос в секунду
-      break;
-    }
+    const res = await spacedFetch(brain, c.url, { method: "POST", signal, headers: { "Content-Type": "application/json", "Authorization": "Bearer " + c.key.trim() }, body: JSON.stringify(body) }, signal);
     if (!res.ok) await httpError(res, brain);
     const j = await res.json();
     const m = j.choices?.[0]?.message;

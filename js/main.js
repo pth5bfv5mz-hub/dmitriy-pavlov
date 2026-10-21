@@ -7,7 +7,7 @@ import { relevantFacts, activeFacts, applyActions, stripActions, extractActions,
 import { addDoc, removeDoc, search, fromUrl, fromFile, ensureDocVecs, docsForPrompt } from "./knowledge.js";
 import * as V from "./voice.js";
 
-const VERSION = "3.2.1";
+const VERSION = "3.3.0";
 let mode = "auto", deep = false, photo = null, busy = null;
 
 /* =================== Часы и статус =================== */
@@ -207,7 +207,9 @@ async function send(text, opts = {}) {
     const docs = docsForPrompt();
     const system = brain => buildPrompt({ mode, query: text, facts, knowledge, docs, voice: !!opts.voice, temp, deep, brain });
     const hist = D.msgs.slice(contextStart(D.msgs)).map(m => ({ role: m.role === "user" ? "user" : "assistant", text: (m.photo && m.role === "user" ? "[прислал фото] " : "") + m.text }));
-    const res = await chat({ system, hist, img, onText, signal: ctl.signal, deep });
+    // В исследовательских режимах разрешаем поиск Google даже без явных слов-маркеров
+    const wantSearch = ["scientist", "analyst", "security"].includes(mode) || deep;
+    const res = await chat({ system, hist, img, onText, signal: ctl.signal, deep, wantSearch });
     const visible = stripActions(res.text) || "Готово.";
     body.innerHTML = md(visible);
     feed(visible, true);
