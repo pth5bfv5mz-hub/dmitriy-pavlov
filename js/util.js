@@ -58,14 +58,16 @@ export function parseLocal(s) {
   const t = new Date(+m[1], +m[2] - 1, +m[3], m[4] ? +m[4] : 9, m[5] ? +m[5] : 0).getTime();
   return isNaN(t) ? null : t;
 }
-export function nextDue(due, repeat) {
-  const d = new Date(due);
+export function nextDue(due, repeat, anchorDay) {
+  const d = new Date(due), day = anchorDay || d.getDate();   // anchorDay — исходное число (31-е остаётся 31-м)
+  // Месяц/год вперёд без «переползания»: 31 января → 28/29 февраля → 31 марта, а не 3 марта
+  const addMonths = n => { d.setDate(1); d.setMonth(d.getMonth() + n); d.setDate(Math.min(day, new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate())); };
   const step = () => {
     if (repeat === "daily") d.setDate(d.getDate() + 1);
     else if (repeat === "weekdays") { do d.setDate(d.getDate() + 1); while (d.getDay() === 0 || d.getDay() === 6); }
     else if (repeat === "weekly") d.setDate(d.getDate() + 7);
-    else if (repeat === "monthly") d.setMonth(d.getMonth() + 1);
-    else if (repeat === "yearly") d.setFullYear(d.getFullYear() + 1);
+    else if (repeat === "monthly") addMonths(1);
+    else if (repeat === "yearly") addMonths(12);
     else return false;
     return true;
   };

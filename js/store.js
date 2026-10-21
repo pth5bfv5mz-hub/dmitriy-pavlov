@@ -127,7 +127,7 @@ const REPEAT_KEYS = { daily: 1, weekdays: 1, weekly: 1, monthly: 1, yearly: 1 };
 const safeId = v => { const s = String(v ?? ""); return /^[\w:.-]{1,80}$/.test(s) ? s : "x" + Math.random().toString(36).slice(2, 12); };
 const clampNum = (v, lo, hi, def) => { const n = Number(v); return Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : def; };
 const NUMS = { ts: [0, 4e12], due: [0, 4e12], used: [0, 4e12], last: [0, 4e12], notifiedAt: [0, 4e12], validTo: [0, 4e12], fixedAt: [0, 4e12],
-  imp: [1, 10], chunks: [0, 1e7], chars: [0, 1e10], pages: [0, 1e6], uses: [0, 1e7], count: [0, 1e7], ivl: [0, 1e5], ease: [1, 5], reps: [0, 1e6], rating: [-1, 1] };
+  imp: [1, 10], anchor: [1, 31], chunks: [0, 1e7], chars: [0, 1e10], pages: [0, 1e6], uses: [0, 1e7], count: [0, 1e7], ivl: [0, 1e5], ease: [1, 5], reps: [0, 1e6], rating: [-1, 1] };
 function cleanItem(x) {
   if (!isObj(x)) return null;
   const y = { ...x };

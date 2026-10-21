@@ -88,9 +88,12 @@ function phonAssets() {
 }
 /* Один экземпляр фонемизатора на всё время работы: раньше на каждую фразу создавался новый
    (19 МБ данных в памяти), и на iPhone длинный ответ мог закончиться закрытием страницы. */
-let phonMod = null, phonOut = null;
+let phonMod = null, phonOut = null, phonUses = 0;
+// У модуля фиксированная память, и каждый вызов чуть её «съедает» (проверено: падает примерно на 55-м вызове) —
+// поэтому через 30 фраз создаём его заново, заранее.
 async function phonModule() {
-  if (phonMod) return phonMod;
+  if (phonMod && phonUses < 30) return phonMod;
+  phonMod = null; phonUses = 0;
   const a = await phonAssets();
   phonMod = await a.create({
     print: line => { if (phonOut) phonOut(line); },
@@ -103,6 +106,7 @@ async function phonModule() {
 }
 async function phonemize(text, voice) {
   const mod = await phonModule();
+  phonUses++;
   let ids = null;
   phonOut = line => { if (ids) return; try { const j = JSON.parse(line); if (j.phoneme_ids) ids = j.phoneme_ids; } catch {} };
   try { mod.callMain(["-l", voice, "--input", JSON.stringify([{ text }]), "--espeak_data", "/espeak-ng-data"]); }
@@ -130,8 +134,9 @@ export async function ensure(id) {
 }
 let queue = Promise.resolve();
 /* Синтез фразы → { pcm: Float32Array, rate }. Фразы идут по очереди (одна модель в памяти). */
-export function synth(text, id, { pace = 1 } = {}) {
+export function synth(text, id, { pace = 1, isStale } = {}) {
   const job = queue.then(async () => {
+    if (isStale && isStale()) throw new Error("stale");   // Сумрак перебил — старые фразы не синтезируем
     await ensure(id);
     const ids = await phonemize(text, (cfg.espeak && cfg.espeak.voice) || "ru");
     const inf = cfg.inference || {};

@@ -47,9 +47,10 @@ async function httpError(res, brain) {
 }
 /* Бесплатные лимиты Google обновляются в полночь по Калифорнии (~10:00 по Москве). */
 export function quotaReset() {
-  const d = new Date(); d.setUTCHours(8, 0, 0, 0);
-  if (d.getTime() <= Date.now()) d.setUTCDate(d.getUTCDate() + 1);
-  return d.getTime();
+  const now = new Date();
+  const la = new Date(now.toLocaleString("en-US", { timeZone: "America/Los_Angeles" }));   // «часы» Калифорнии
+  const next = new Date(la); next.setHours(24, 0, 0, 0);
+  return now.getTime() + (next - la) + 60e3;   // +1 минута запаса
 }
 const isDaily = e => e && e.status === 429 && (e.daily || /per.?day|daily|PerDay/i.test(e.message || ""));
 export const isLocationErr = e => /location is not supported|User location|unsupported_country|not available in your (country|region)/i.test(String(e && e.message));
@@ -221,7 +222,9 @@ let thinkOff = true;      // отключать «раздумья» 2.5-flash �
 // Поиск Google у бесплатного ключа — крошечная отдельная квота (~500/день, только на 2.5-flash).
 // Поэтому включаем его ТОЛЬКО когда вопрос явно про свежее/внешнее, а не на каждый «привет».
 const FRESH_RE = /новост|сейчас|сегодня|завтра|вчера|текущ|погод|курс|котировк|цен[аыу]|сколько стоит|стоит ли|прогноз|расписан|когда (выйд|будет|состо|начн|откро)|последн|актуальн|свеж|нынешн|202[4-9]|203\d|кто (сейчас|выиграл|победил|президент|глава)|результат|счёт матч|кто такой|что такое|where|погугли|найди|поищи|в интернете|ссылк|http/i;
-async function chatGemini({ system, hist, img, onText, signal, deep, wantSearch }) {
+async function chatGemini({ system, hist, img, onText: show, onReset, signal, deep, wantSearch }) {
+  let partial = false;
+  const onText = t => { partial = true; show(t); };
   const base = { system_instruction: { parts: [{ text: system }] }, contents: gContents(hist, img), generationConfig: { temperature: deep ? 0.3 : 0.45 } };
   let last; const tried = [];
   const lastUser = [...hist].reverse().find(h => h.role === "user");
@@ -256,6 +259,7 @@ async function chatGemini({ system, hist, img, onText, signal, deep, wantSearch 
       }
       catch (e) {
         last = e;
+        if (partial) { partial = false; onReset && onReset(); }   // кусок ответа уже показан — следующая попытка начнёт заново
         if (think && e.status === 400 && /thinking/i.test(e.message || "")) { thinkOff = false; ti--; continue; }   // модель не знает этот параметр — повтор без него
         // Любой сбой с инструментами поиска — не мучаем квоту поиска, отвечаем без него
         if (tools && (e.status === 429 || e.status === 400 || e.status >= 500)) { if (e.status === 429) searchOffUntil = Date.now() + 36e5; continue; }
@@ -305,7 +309,7 @@ export async function embedGemini(texts, task) {
         (j.embeddings || []).forEach(e => out.push(normalize(e.values || [])));
       }
       return { model, vecs: out };
-    } catch (e) { last = e; if (!gRetriable(e)) throw e; }
+    } catch (e) { last = e; if (isLocationErr(e)) { blockedUntil.gemini = Date.now() + 5 * 6e4; throw e; } if (!gRetriable(e)) throw e; }
   }
   throw last;
 }
@@ -416,7 +420,7 @@ async function toolWebSearch(q, sources) {
 const WEATHER_RE = /погод[аеуы]?\s+(?:в|во)\s+([А-ЯЁA-Z][\p{L}-]+(?:[ -][А-ЯЁA-Z][\p{L}-]+)?)/u;
 async function netContext(q) {
   const sources = []; const parts = [];
-  const urls = (q.match(/https?:\/\/\S+/g) || []).slice(0, 2);
+  const urls = linksIn(q).slice(0, 2);
   for (const u of urls) { try { parts.push(`Страница ${u}:\n` + (await readUrl(u)).slice(0, 6000)); sources.push({ url: u, title: "" }); } catch {} }
   const w = q.match(WEATHER_RE);
   if (w) { try { const r = await toolWeather(w[1]); if (typeof r === "object") { parts.push("Погода: " + JSON.stringify(r)); sources.push({ url: "https://open-meteo.com", title: "Open-Meteo (погода)" }); } } catch {} }
@@ -437,6 +441,19 @@ async function toolWeather(city) {
   const w = await getJSON(`https://api.open-meteo.com/v1/forecast?latitude=${p.latitude}&longitude=${p.longitude}&current=temperature_2m,apparent_temperature,weather_code,wind_speed_10m,relative_humidity_2m&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max,weather_code&timezone=auto&forecast_days=3`);
   return { place: `${p.name}${p.country ? ", " + p.country : ""}`, current: w.current, daily: w.daily, note: "weather_code по WMO: 0 ясно, 1-3 облачно, 45-48 туман, 51-67 дождь, 71-77 снег, 80-82 ливни, 95-99 гроза" };
 }
+/* Ссылки из текста: без хвостовой пунктуации («…/123/.», «https://x.ru»»). */
+export const linksIn = t => (String(t || "").match(/https?:\/\/[^\s<>"'«»]+/g) || []).map(u => u.replace(/[.,;:!?)\]}”’]+$/, ""));
+/* Можно ли открыть адрес: тот же сайт (точное совпадение origin, без логина в адресе) и путь не короче разрешённого. */
+function urlAllowed(url, list) {
+  let t; try { t = new URL(url); } catch { return false; }
+  if (t.username || t.password || !/^https?:$/.test(t.protocol)) return false;
+  return list.some(u => {
+    let a; try { a = new URL(u); } catch { return false; }
+    if (a.origin !== t.origin) return false;
+    const base = a.pathname.endsWith("/") ? a.pathname : a.pathname + "/";
+    return t.pathname === a.pathname || t.pathname.startsWith(base) || a.pathname === "/";
+  });
+}
 async function runTool(call, sources, allowed = new Set()) {
   let a = {}; try { a = JSON.parse(call.function.arguments || "{}"); } catch {}
   try {
@@ -444,7 +461,9 @@ async function runTool(call, sources, allowed = new Set()) {
     if (call.function.name === "read_url") {
       const url = String(a.url || "");
       // Открываем только ссылки от Сумрака или из найденного поиском — не те, что «подсказала» страница
-      if (![...allowed, ...sources.map(x => x.url)].some(u => u && (url === u || url.startsWith(u.replace(/[#?].*$/, ""))))) return "Эту ссылку открыть нельзя: открываю только ссылки из сообщения Сумрака или из результатов поиска.";
+      // Только ссылки Сумрака или найденные поиском (погодный сервис — не «источник» для чтения)
+      const ok = urlAllowed(url, [...allowed, ...sources.filter(x => !/open-meteo/.test(x.url)).map(x => x.url)].filter(Boolean));
+      if (!ok) return "Эту ссылку открыть нельзя: открываю только ссылки из сообщения Сумрака или из результатов поиска.";
       const t = await readUrl(url); sources.push({ url, title: "" }); return t;
     }
     return await toolWebSearch(String(a.query || ""), sources);
@@ -468,13 +487,13 @@ async function spacedFetch(brain, url, opts, signal, retries = 1) {
   }
 }
 const noTools = new Set();
-async function chatCompat(brain, { system, hist, img, onText, onStatus, signal }) {
+async function chatCompat(brain, { system, hist, img, onText, onStatus, onReset, signal }) {
   const c = COMPAT[brain]();
   const messages = [{ role: "system", content: system }, ...hist.map(h => ({ role: h.role, content: h.text }))];
   if (img) { const last = messages[messages.length - 1]; last.content = [{ type: "text", text: last.content }, { type: "image_url", image_url: { url: img.url } }]; }
   const sources = [];
   const lastUserText = [...hist].reverse().find(h => h.role === "user")?.text || "";
-  const allowed = new Set(lastUserText.match(/https?:\/\/[^\s<>"')]+/g) || []);
+  const allowed = new Set(linksIn(lastUserText));
   // Запасные модели того же сервиса: у каждой своя очередь и свой лимит
   const models = [...new Set([img ? c.vision : c.model, ...(img ? [] : c.spare || [])])].filter(Boolean).slice(0, 3);
   let mi = 0;
@@ -490,7 +509,7 @@ async function chatCompat(brain, { system, hist, img, onText, onStatus, signal }
     }
     if (!res.ok && (res.status === 429 || res.status >= 500 || (brain === "openrouter" && res.status === 404)) && mi < models.length - 1) { mi++; round--; continue; }
     if (!res.ok) await httpError(res, brain);
-    const m = /event-stream/i.test(res.headers.get("content-type") || "") ? await readCompatStream(res, onText, signal) : (await res.json()).choices?.[0]?.message;
+    const m = /event-stream/i.test(res.headers.get("content-type") || "") ? await readCompatStream(res, onText, signal, onReset) : (await res.json()).choices?.[0]?.message;
     if (!m || (!m.content && !(m.tool_calls && m.tool_calls.length))) throw new BrainError("Пустой ответ", 503, brain);
     if (m.tool_calls && m.tool_calls.length) {
       messages.push({ role: "assistant", content: m.content || "", tool_calls: m.tool_calls });
@@ -506,15 +525,17 @@ async function chatCompat(brain, { system, hist, img, onText, onStatus, signal }
 }
 /* Поток в формате OpenAI: текст — кусками в delta.content, вызовы инструментов — частями в delta.tool_calls
    (склеиваем по index, а если его нет — по id или порядку). */
-async function readCompatStream(res, onText, signal) {
-  let text = ""; const calls = [];
+async function readCompatStream(res, onText, signal, onReset) {
+  let text = "", shown = false; const calls = [];
   await readSSE(res, ev => {
     if (ev.error) throw new BrainError(ev.error.message || "Ошибка", ev.error.code || 500, "");
     const d = ev.choices && ev.choices[0] && (ev.choices[0].delta || ev.choices[0].message); if (!d) return;
     if (d.content) {
       text += typeof d.content === "string" ? d.content : (Array.isArray(d.content) ? d.content.map(p => p.text || "").join("") : "");
-      if (!calls.length) onText(text);
+      if (!calls.length) { onText(text); shown = true; }
     }
+    // Модель сначала написала «сейчас поищу…», а потом вызвала поиск — показанное и озвученное сбрасываем
+    if (d.tool_calls && d.tool_calls.length && shown) { shown = false; onReset && onReset(); }
     (d.tool_calls || []).forEach((tc, k) => {
       let i = Number.isInteger(tc.index) ? tc.index : tc.id ? calls.findIndex(c => c && c.id === tc.id) : -1;
       if (i < 0) i = tc.id || !calls.length ? calls.length : calls.length - 1;
@@ -630,7 +651,8 @@ async function chatOnce(opts) {
     // Правила собираются под тот мозг, который реально отвечает (у Mistral и Z.ai поиск — инструментами).
     // «Ищу в интернете…» — статус, а не ответ: он не мешает перейти на запасной мозг.
     const o = { ...opts, hist, system: typeof opts.system === "function" ? opts.system(b) : opts.system,
-      onStatus: t => opts.onText(t), onText: t => { gotText = true; opts.onText(t); } };
+      onStatus: t => opts.onText(t), onText: t => { gotText = true; opts.onText(t); },
+      onReset: () => { gotText = false; opts.onReset && opts.onReset(); } };
     try {
       const r = b === "gemini" ? await chatGemini(o) : b === "claude" ? await chatClaude(o) : await chatCompat(b, o);
       bump(b); persist();
@@ -653,7 +675,7 @@ export async function plain(system, prompt, opts) {
   if (gi > 0 && !isBlocked("gemini") && !geminiSpent()) list.unshift(...list.splice(gi, 1));
   for (const b of list) {
     try { const t = b === "gemini" ? await plainGemini(system, prompt, opts) : b === "claude" ? await plainClaude(system, prompt) : await plainCompat(b, system, prompt); bump(b); return t; }
-    catch (e) { e.brain = e.brain || b; last = e; if (!shouldFallback(e)) throw e; }
+    catch (e) { e.brain = e.brain || b; last = e; if (isLocationErr(e)) blockedUntil.gemini = Date.now() + 5 * 6e4; if (!shouldFallback(e)) throw e; }
   }
   throw last || new BrainError("Нет подключённой нейросети", 0, null);
 }
@@ -663,15 +685,22 @@ export async function embed(texts, task) { return canEmbed() ? embedGemini(texts
 /* Распознавание записанной речи нейросетью. */
 export const canTranscribe = () => (configured().includes("gemini") && !isBlocked("gemini")) || configured().includes("mistral");
 export async function transcribe(blob) {
-  let last;
-  if (configured().includes("mistral") && !isBlocked("mistral-stt")) {
-    try { const t = await transcribeMistral(blob); if (t || !configured().includes("gemini")) return t; }
-    catch (e) { last = e; blockedUntil["mistral-stt"] = Date.now() + (e.status === 429 ? 5 : 30) * 6e4; }
+  let last, heard = null;
+  const gem = configured().includes("gemini") && !isBlocked("gemini");
+  // Mistral пропускаем, только если он «на паузе» и есть Gemini; единственный движок пробуем всегда
+  if (configured().includes("mistral") && (!isBlocked("mistral-stt") || !gem)) {
+    try { heard = await transcribeMistral(blob); if (heard || !gem) return heard; }
+    catch (e) {
+      last = e;
+      // Пауза — только на ошибки ключа и лимита; разовый сбой сети не отключает голос
+      if ([401, 403, 429].includes(e.status)) blockedUntil["mistral-stt"] = Date.now() + (e.status === 429 ? 5 : 30) * 6e4;
+    }
   }
-  if (configured().includes("gemini") && !isBlocked("gemini")) {
+  if (gem) {
     try { return await transcribeGemini(await blobB64(blob), (blob.type || "audio/mp4").split(";")[0]); }
     catch (e) { last = e; if (isLocationErr(e)) blockedUntil.gemini = Date.now() + 5 * 6e4; }
   }
+  if (heard === "") return "";   // Mistral честно не услышал речи
   throw last || new BrainError("Для распознавания речи нужен Gemini или Mistral", 0, null);
 }
 export const canTTS = () => configured().includes("gemini") && !isBlocked("gemini");

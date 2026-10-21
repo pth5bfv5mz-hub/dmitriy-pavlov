@@ -4,7 +4,7 @@
    - Устаревшие факты не стираются, а помечаются «устарело» — так не теряется история.
    - Навыки («научись»), уроки (из поправок и оценок), выводы (рефлексия раз в день), дневник разговоров. */
 import { D, persist, idbPut, idbAll, idbDel, idbPrefix } from "./store.js";
-import { neutralize, uid, arr, terms, cosine, parseLocal, REPEAT_TXT, isoLocal, todayKey, parseJSON } from "./util.js";
+import { neutralize, uid, arr, terms, cosine, parseLocal, nextDue, REPEAT_TXT, isoLocal, todayKey, parseJSON } from "./util.js";
 import { plain, embed, canEmbed } from "./brains.js";
 
 export const CATS = ["личное", "люди", "работа", "учёба", "здоровье", "деньги", "цели", "предпочтения", "другое"];
@@ -84,14 +84,24 @@ const CONFIRM_RE = /^\s*(да|ага|угу|верно|сохран\S*|подт�
 /* Защита от «подброшенных» команд (prompt injection): текст со страницы или из документа может попросить
    нейросеть удалить данные или вписать себе правило. Поэтому разрушительные и «обучающие» действия
    применяем, только если этого хотел сам Сумрак, — по словам его сообщения, — и понемногу за раз. */
-const DEL_INTENT_RE = /удал|убер|убра|сотр|стер|отмен|не нужн|забудь|забыть|забуд|очист|выкин|снес|вычеркн/i;
-const DONE_INTENT_RE = /сделал|сделано|готово|выполн|закр(ой|ыл|ыть)|отмет|уже\s|купил|забрал|позвонил|сходил|отправил|оплатил|закончил|решил/i;
-const FEEDBACK_RE = /нет[,.!\s]|^нет$|не то|не так|не понял|опять|снова ты|я же|зачем ты|почему ты|не надо|ерунд|чушь|бред|плохо|неверн|неправ|ошиб|врёшь|врешь|выдум|не правда|неправда|поправ|исправ|впредь|в следующий раз|запомни|научи/i;
-const ALL_RE = /\b(все|всё|весь|целиком|список)\b/i;
+const DEL_INTENT_RE = /удал|убер|убра|(^|[^\p{L}])(сотри|сотрите|стереть|стёр|стер|снеси|снести)(?![\p{L}])|отмен|не нужн|забудь|забыть|забуд|очист|выкин|вычеркн|не напомин|хватит напомин|перестань напомин|не надо напомин|больше не напомин/iu;
+const DONE_INTENT_RE = /сделал|сделано|готово|выполн|закр(ой|ыл|ыть)|отмет|уже\s|купил|забрал|позвонил|сходил|отправил|оплатил|закончил|решил|выпил|принял|съел|прочитал|написал|получил/i;
+const FEEDBACK_RE = /^\s*нет(?![\p{L}])|не то(?![\p{L}])|не так(?![\p{L}])|не понял|опять|снова ты|я же |зачем ты|почему ты|не надо|ерунд|чушь|бред|плохо|неверн|неправил|ошиб|врёшь|врешь|выдум|не правда|неправда|поправ|исправ|впредь|в следующий раз/iu;
+const ALL_RE = /(^|[^\p{L}])(все|всё|весь|всех|целиком|список)(?![\p{L}])/iu;
 const capList = (list, userText) => list.slice(0, ALL_RE.test(userText || "") ? 50 : 2);
 const real = t => !!t && !/^\s*(\.{2,}|…|-|—)?\s*$/.test(t) && !/^\.\.\.|^…$/.test(t.trim());   // не заглушка «...» из образца
 /* userText — последнее сообщение Сумрака. Навыки и уроки создаются только по его словам,
    а не из найденных в интернете страниц (защита от «подброшенных» инструкций). */
+/* Отметить дело выполненным. Повторяющееся не закрываем — переносим на следующий раз. */
+export function completeTask(t) {
+  if (t.repeat && t.due) advanceTask(t);
+  else t.done = true;
+}
+/* Перенести повторяющееся дело на следующий раз, сохраняя исходное число месяца. */
+export function advanceTask(t) {
+  if (!t.anchor) t.anchor = new Date(t.due).getDate();
+  t.due = nextDue(t.due, t.repeat, t.anchor) || t.due; t.notified = false;
+}
 export function applyActions(act, userText, { temp } = {}) {
   const out = { newTasks: [], remembered: [], learned: [], cards: 0 };
   if (!act || typeof act !== "object") return out;
@@ -121,13 +131,13 @@ export function applyActions(act, userText, { temp } = {}) {
   arr(act.update_tasks).forEach(u => {
     const t = u && D.tasks.find(x => x.id === String(u.id)); if (!t) return;
     if (u.text) t.text = String(u.text);
-    if (u.due !== undefined) { t.due = u.due ? parseLocal(u.due) : null; t.notified = false; }
+    if (u.due !== undefined) { t.due = u.due ? parseLocal(u.due) : null; t.notified = false; delete t.anchor; }
     if (u.repeat !== undefined) t.repeat = Object.hasOwn(REPEAT_TXT, u.repeat) ? u.repeat : null;
     out.newTasks.push(t);
   });
   const delIntent = DEL_INTENT_RE.test(userText || "");
   const done = DONE_INTENT_RE.test(userText || "") || delIntent ? capList(arr(act.done).map(String), userText) : [];
-  D.tasks.forEach(t => { if (done.includes(t.id)) t.done = true; });
+  D.tasks.forEach(t => { if (done.includes(t.id)) completeTask(t); });
   const delT = delIntent ? capList(arr(act.delete_tasks).map(String), userText) : [];
   D.tasks = D.tasks.filter(t => !delT.includes(t.id));
   arr(act.notes).forEach(t => { t = String(typeof t === "string" ? t : t && t.text || "").trim(); if (real(t)) D.notes.push({ id: uid(), text: t, ts: now }); });
@@ -259,13 +269,13 @@ export function similar(a, b) {
   const A = roots(a), B = roots(b);
   if (!A.size || !B.size) return 0;
   let n = 0; A.forEach(w => { if (B.has(w)) n++; });
-  return n / Math.min(A.size, B.size);
+  return 2 * n / (A.size + B.size);
 }
 export function addMistake({ what, why = "", fix = "", q = "", src = "сам заметил" }) {
   what = String(what || "").trim(); fix = String(fix || "").trim();
   if (!real(what) || what.length < 8) return null;
   const now = Date.now();
-  const ex = D.mistakes.find(m => similar(m.what, what) >= 0.5 || (real(fix) && m.fix && similar(m.fix, fix) >= 0.6 && similar(m.what, what) >= 0.3));
+  const ex = D.mistakes.find(m => similar(m.what, what) >= 0.5 || (real(fix) && m.fix && similar(m.fix, fix) >= 0.5 && similar(m.what, what) >= 0.3));
   if (ex) {
     ex.count = (ex.count || 1) + 1; ex.last = now; ex.status = "open";
     if (real(fix)) ex.fix = fix.slice(0, 400); if (q) ex.q = String(q).slice(0, 200);

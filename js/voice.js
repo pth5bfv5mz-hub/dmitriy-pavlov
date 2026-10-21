@@ -207,7 +207,7 @@ export function createSpeaker({ limit = 0 } = {}) {
   const notify = () => { if (wake) { const w = wake; wake = null; w(); } };
   // спокойнее: чуть медленнее обычного (S.pace — множитель длительности)
   const ask = seg => {
-    if (engine === "local") seg.audio = P.synth(seg.text, S.piperVoice, { pace: +S.pace || 1.08 });
+    if (engine === "local") seg.audio = P.synth(seg.text, S.piperVoice, { pace: +S.pace || 1.08, isStale: () => my !== token });
     else if (engine === "live") seg.audio = ttsGemini(seg.text, S.liveVoice);
     if (seg.audio) seg.audio.catch(() => {});
   };
@@ -239,7 +239,8 @@ export function createSpeaker({ limit = 0 } = {}) {
       if (my !== token) return;
       const seg = segs[i];
       if (seg.audio) {
-        try { await playAudio(await seg.audio, my); continue; }
+        // Звук не готов слишком долго (сеть зависла) — не ждём бесконечно, говорим запасным голосом
+        try { await playAudio(await Promise.race([seg.audio, sleep(engine === "local" ? 30000 : 15000).then(() => { throw new Error("slow"); })]), my); continue; }
         catch (e) {
           if (my !== token) return;
           const offAudio = e && e.message === "audio-off";

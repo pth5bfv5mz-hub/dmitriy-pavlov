@@ -5,11 +5,11 @@ import { chat, plain, order, anyBrain, configured, BRAINS, explain, discoverGemi
 // Признаки «не знаю свежего» в ответе модели без поиска
 const NOKNOW_RE = /(нет|не имею) (доступа|возможности)[^.]{0,30}(интернет|актуальн|свеж|реальн|текущ)|не могу (проверить|знать|посмотреть|найти)[^.]{0,25}(интернет|актуальн|текущ|сейчас|сегодня)|на момент (моего )?(обучения|последнего обновления)|(у меня )?нет (актуальн|свеж)[а-я]* (данных|информации|сведений)|не располагаю (актуальн|свеж)|мои (данные|знания) (ограничены|заканчиваются)|рекомендую (проверить|уточнить) на (официальн|сайт)/i;
 import { buildPrompt, MODES } from "./prompt.js";
-import { relevantFacts, activeFacts, applyActions, stripActions, extractActions, contextStart, updateDiary, reflect, tidyMemory, lessonFromFeedback, selfCheck, selfReview, openMistakes, ensureFactVecs, dueCards, gradeCard, CATS } from "./memory.js";
+import { relevantFacts, activeFacts, applyActions, stripActions, extractActions, contextStart, updateDiary, reflect, tidyMemory, lessonFromFeedback, completeTask, advanceTask, selfCheck, selfReview, openMistakes, ensureFactVecs, dueCards, gradeCard, CATS } from "./memory.js";
 import { addDoc, removeDoc, search, fromUrl, fromFile, ensureDocVecs, docsForPrompt } from "./knowledge.js";
 import * as V from "./voice.js";
 
-const VERSION = "3.10.2";
+const VERSION = "3.11.0";
 let mode = "auto", deep = false, photo = null, busy = null;
 
 /* =================== Часы и статус =================== */
@@ -127,7 +127,15 @@ function renderChat() {
   });
   if (!anyBrain()) return showSetupCard();
   if (S.briefing && D.meta.lastBrief !== todayKey() && !D.meta.tempChat) showBriefing();
-  else addMsg("ai", greeting());
+  else { const g = greeting(); addMsg("ai", g); rememberAsk(g); }
+}
+/* Если Дмитрий сам что-то спросил (например, о незакрытых делах) — кладём это в историю,
+   иначе на ответ «перенеси на завтра» нейросеть не поймёт, о чём речь. */
+function rememberAsk(text) {
+  if (!/Не закрыто/.test(text) || D.meta.tempChat) return;
+  // Не чаще раза в 6 часов — чтобы каждое открытие приложения не засоряло историю
+  if (D.msgs.slice(-12).some(m => m.role === "ai" && /Не закрыто/.test(m.text) && Date.now() - (m.ts || 0) < 6 * 36e5)) return;
+  D.msgs.push({ role: "ai", text, ts: Date.now() }); persist();
 }
 function showSetupCard() {
   const el = document.createElement("div"); el.className = "msg ai";
@@ -221,12 +229,14 @@ async function send(text, opts = {}) {
     const hist = D.msgs.slice(contextStart(D.msgs)).map(m => ({ role: m.role === "user" ? "user" : "assistant", text: (m.photo && m.role === "user" ? "[прислал фото] " : "") + m.text }));
     // В исследовательских режимах разрешаем поиск Google даже без явных слов-маркеров
     const wantSearch = ["scientist", "analyst", "security"].includes(mode) || deep;
-    let res = await chat({ system, hist, img, onText, signal: ctl.signal, deep, wantSearch });
+    // Ответ начался заново (была пауза на поиск или сменилась модель) — заново и озвучиваем
+    const onReset = () => { if (speaker) { speaker.cancel(); speaker = newSpeaker(); } spokenTo = 0; pending = ""; };
+    let res = await chat({ system, hist, img, onText, onReset, signal: ctl.signal, deep, wantSearch });
     // Ответил без поиска и признался, что не знает свежего, — сам ищу в интернете и отвечаю заново
     if (res.brain === "gemini" && res.noSearch && !res.netTried && !img && NOKNOW_RE.test(stripActions(res.text))) {
       if (speaker) { speaker.cancel(); speaker = newSpeaker(); spokenTo = 0; }
       body.innerHTML = `<span class="thinking">Ищу в интернете…</span>`;
-      try { res = await chat({ system, hist, img, onText, signal: ctl.signal, deep, wantSearch: true }); }
+      try { res = await chat({ system, hist, img, onText, onReset, signal: ctl.signal, deep, wantSearch: true }); }
       catch (e2) { if (e2.name === "AbortError") throw e2; }   // не вышло — оставим первый ответ
     }
     const visible = stripActions(res.text) || "Готово.";
@@ -440,7 +450,7 @@ async function talkLoop() {
   let empties = 0;
   if (talkGreet) {
     talkGreet = false;
-    talkSet("speaking"); const gr = spokenGreeting(); $("#talkText").textContent = gr;
+    talkSet("speaking"); const gr = spokenGreeting(); $("#talkText").textContent = gr; rememberAsk(gr.replace("Не закрыто с прошлого", "Не закрыто"));
     await V.speak(gr, { force: true });
     if (!alive()) return;
   }
@@ -533,7 +543,7 @@ function checkReminders() {
       // и не обрываем ответ, который сейчас звучит, — тогда хватит сигнала и сообщения
       if (!talkOn && !V.isRecording() && !V.speaking() && !busy) V.speak(msg, { force: true });
     }
-    if (t.repeat) { t.due = nextDue(t.due, t.repeat); t.notified = false; } else t.notified = true;
+    if (t.repeat) advanceTask(t); else t.notified = true;
   });
   if (changed) { persist(); renderTasks(); }
   armReminder();
@@ -613,7 +623,10 @@ document.addEventListener("click", async e => {
 });
 document.addEventListener("change", e => {
   const id = e.target.dataset && e.target.dataset.done; if (!id) return;
-  const t = D.tasks.find(x => x.id === id); if (t) { t.done = e.target.checked; persist(); renderTasks(); }
+  const t = D.tasks.find(x => x.id === id); if (!t) return;
+  if (e.target.checked && t.repeat && t.due) { completeTask(t); toast("Отметил. Следующий раз: " + fmtDue(t.due), 2500); }
+  else t.done = e.target.checked;
+  persist(); renderTasks(); armReminder();
 });
 $("#addTask").addEventListener("submit", e => {
   e.preventDefault(); const text = $("#newTask").value.trim(); if (!text) return;
@@ -786,12 +799,18 @@ $("#diagCopy").onclick = async () => { try { await navigator.clipboard.writeText
 /* =================== Данные =================== */
 let backupCache = "", backupVer = -1;
 async function prepBackup() { try { const v = dataVersion(); backupCache = JSON.stringify(await exportAll()); backupVer = v; } catch {} }
-const backedUp = () => { D.meta.lastBackup = Date.now(); persist(); };
+const backedUp = () => { D.meta.lastBackup = Date.now(); persist(); setTimeout(prepBackup, 500); };
 /* Сохранить копию: «Поделиться» → Файлы/AirDrop/почта; запасной путь — буфер обмена. JSON готовится заранее,
    потому что iPhone разрешает «Поделиться» только сразу после касания. */
 async function doBackup() {
   // Копия — всегда свежая: если после подготовки что-то изменилось, собираем заново
-  const json = backupCache && backupVer === dataVersion() ? backupCache : JSON.stringify(await exportAll());
+  // iPhone разрешает «Поделиться» только сразу после касания: свежую копию ждём не дольше 0,4 с,
+  // иначе берём подготовленную (она отстаёт максимум на минуты) — и сразу готовим новую
+  let json = backupCache && backupVer === dataVersion() ? backupCache : "";
+  if (!json) {
+    const fresh = exportAll().then(o => JSON.stringify(o));
+    json = backupCache ? await Promise.race([fresh, new Promise(r => setTimeout(() => r(backupCache), 400))]) : await fresh;
+  }
   prepBackup();
   const name = "dmitriy-backup-" + todayKey() + ".json";
   try {
@@ -874,7 +893,7 @@ V.onSpeakingChange(syncSendBtn);
 setInterval(() => { checkReminders(); syncSendBtn(); }, 10000); checkReminders();
 if (S.geminiKey) discoverGemini().then(fillGeminiModels).catch(() => {});
 if (S.openrouterKey) discoverOpenRouter().catch(() => {});
-document.addEventListener("visibilitychange", () => { if (!document.hidden) { checkReminders(); V.audioCtx(); } else if (!talkOn) { micGen++; V.stopRecording(true); vbSet("idle"); } });
+document.addEventListener("visibilitychange", () => { if (!document.hidden) { checkReminders(); V.audioCtx(); } else if (!talkOn) { micGen++; V.stopRecording(true); vbSet("idle"); idleStatus(); } });
 // Любое касание экрана «будит» звук: iPhone разрешает играть звук только после касания
 ["touchend", "click"].forEach(ev => document.addEventListener(ev, () => V.unlock(), { capture: true, passive: true }));
 if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
