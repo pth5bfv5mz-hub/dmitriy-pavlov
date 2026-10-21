@@ -3,10 +3,14 @@
    Движок (ONNX Runtime + espeak-ng) лежит в приложении, модель голоса (~60 МБ) скачивается один раз
    с Hugging Face и хранится в кэше телефона. */
 const LIB = new URL("../lib/piper/", import.meta.url).href;
-const BASES = [
-  "https://huggingface.co/rhasspy/piper-voices/resolve/main",
-  "https://huggingface.co/diffusionstudio/piper-voices/resolve/main",
-  "https://hf-mirror.com/rhasspy/piper-voices/resolve/main",
+// Откуда качать голос: сначала с нашего сайта на GitHub (открывается из России без VPN),
+// потом — Hugging Face и зеркала.
+const OWN = new URL("../voices/", import.meta.url).href;
+const SOURCES = [
+  path => OWN + path.split("/").pop(),
+  path => "https://huggingface.co/rhasspy/piper-voices/resolve/main/" + path,
+  path => "https://huggingface.co/diffusionstudio/piper-voices/resolve/main/" + path,
+  path => "https://hf-mirror.com/rhasspy/piper-voices/resolve/main/" + path,
 ];
 export const VOICES = {
   "ru_RU-dmitri-medium": { name: "Дмитрий", note: "мужской", path: "ru/ru_RU/dmitri/medium/ru_RU-dmitri-medium.onnx" },
@@ -26,10 +30,11 @@ export async function isDownloaded(id) {
 }
 async function fetchFirst(path, onProgress) {
   let last;
-  for (const base of BASES) {
+  for (const src of SOURCES) {
     try {
-      const res = await fetch(`${base}/${path}`);
+      const res = await fetch(src(path));
       if (!res.ok) { last = new Error("HTTP " + res.status); continue; }
+      if (/text\/html/.test(res.headers.get("content-type") || "")) { last = new Error("not a model"); continue; }   // страница-заглушка вместо файла
       const total = +(res.headers.get("content-length") || 0);
       if (!res.body || !onProgress) return await res.blob();
       const reader = res.body.getReader(); const parts = []; let got = 0;

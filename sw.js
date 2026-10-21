@@ -1,5 +1,5 @@
 /* Офлайн-оболочка: приложение открывается даже без сети; запросы к нейросетям идут мимо кэша. */
-const CACHE = "dp-v3.5.0";
+const CACHE = "dp-v3.5.1";
 const LIB_CACHE = "dp-lib-v1";   // тяжёлые библиотеки (голосовой движок, PDF) — не перекачиваем при обновлениях
 const KEEP = ["dp-voice-", "dp-lib-"]; // кэш скачанного голоса и библиотек обновление НЕ стирает
 const SHELL = ["./", "index.html", "style.css", "js/main.js", "js/util.js", "js/store.js", "js/brains.js", "js/memory.js", "js/knowledge.js", "js/prompt.js", "js/voice.js", "js/piper.js", "guide.html", "manifest.webmanifest", "icons/icon-192.png", "icons/icon-512.png", "icons/apple-touch-icon.png"];
@@ -10,6 +10,7 @@ self.addEventListener("activate", e => {
 self.addEventListener("fetch", e => {
   const url = new URL(e.request.url);
   if (e.request.method !== "GET" || url.origin !== location.origin) return;
+  if (url.pathname.includes("/voices/")) return;   // модели голоса хранит сам голосовой модуль — не дублируем 60 МБ
   // Библиотеки в /lib/ не меняются — сначала кэш, сеть только в первый раз.
   if (url.pathname.includes("/lib/")) {
     e.respondWith(caches.open(LIB_CACHE).then(c => c.match(e.request).then(hit => hit || fetch(e.request).then(res => {

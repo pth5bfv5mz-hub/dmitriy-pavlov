@@ -1,0 +1,47 @@
+# Скачивает русские голоса Piper с Hugging Face и кладёт их в приложение (папка voices/),
+# чтобы на телефоне голос загружался с GitHub Pages — без VPN и без зависимости от Hugging Face.
+name: Голоса Дмитрия
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: [".github/workflows/voices.yml"]
+permissions:
+  contents: write
+concurrency:
+  group: voices
+  cancel-in-progress: false
+jobs:
+  voices:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 1
+      - name: Скачать голоса
+        run: |
+          set -euo pipefail
+          mkdir -p voices
+          BASE="https://huggingface.co/rhasspy/piper-voices/resolve/main/ru/ru_RU"
+          for v in dmitri denis ruslan; do
+            f="ru_RU-$v-medium"
+            for ext in onnx onnx.json; do
+              curl -fsSL --retry 5 --retry-delay 5 -o "voices/$f.$ext" "$BASE/$v/medium/$f.$ext"
+            done
+            size=$(stat -c%s "voices/$f.onnx")
+            echo "$f.onnx: $size байт"
+            test "$size" -gt 10000000
+            python3 -c "import json,sys; j=json.load(open('voices/$f.onnx.json')); assert j['audio']['sample_rate']>0; print('$f.json ok', j['espeak']['voice'])"
+          done
+          ls -la voices
+      - name: Сохранить в приложение
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add voices
+          if git diff --cached --quiet; then echo "Голоса уже на месте"; exit 0; fi
+          git commit -m "Голоса Дмитрия: русские модели Piper (Дмитрий, Денис, Руслан)"
+          git push origin HEAD:main
+          git push origin HEAD:gh-pages
