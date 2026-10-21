@@ -3,6 +3,7 @@
   "short_name": "Дмитрий",
   "description": "Личный голосовой ассистент Сумрака",
   "lang": "ru",
+  "id": "./",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",

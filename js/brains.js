@@ -536,11 +536,15 @@ async function plainCompat(brain, system, prompt) {
   return j.choices?.[0]?.message?.content || "";
 }
 async function transcribeMistral(blob) {
-  const fd = new FormData();
-  fd.append("model", "voxtral-mini-latest");
-  fd.append("file", blob, "speech." + (blob.type.includes("webm") ? "webm" : blob.type.includes("wav") ? "wav" : "m4a"));
-  fd.append("language", "ru");
-  const res = await fetch("https://api.mistral.ai/v1/audio/transcriptions", { method: "POST", headers: { "Authorization": "Bearer " + S.mistralKey.trim() }, body: fd });
+  const send = withLang => {
+    const fd = new FormData();
+    fd.append("model", "voxtral-mini-latest");
+    fd.append("file", blob, "speech." + (blob.type.includes("webm") ? "webm" : blob.type.includes("wav") ? "wav" : "m4a"));
+    if (withLang) fd.append("language", "ru");   // язык известен заранее — распознаёт точнее
+    return fetch("https://api.mistral.ai/v1/audio/transcriptions", { method: "POST", headers: { "Authorization": "Bearer " + S.mistralKey.trim() }, body: fd });
+  };
+  let res = await send(true);
+  if (res.status === 400 || res.status === 422) res = await send(false);   // параметр языка не приняли — без него
   if (!res.ok) await httpError(res, "mistral");
   return ((await res.json()).text || "").trim();
 }

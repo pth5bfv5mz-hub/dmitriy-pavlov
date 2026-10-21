@@ -9,7 +9,7 @@ import { relevantFacts, activeFacts, applyActions, stripActions, extractActions,
 import { addDoc, removeDoc, search, fromUrl, fromFile, ensureDocVecs, docsForPrompt } from "./knowledge.js";
 import * as V from "./voice.js";
 
-const VERSION = "3.10.1";
+const VERSION = "3.10.2";
 let mode = "auto", deep = false, photo = null, busy = null;
 
 /* =================== Часы и статус =================== */
