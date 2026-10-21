@@ -309,7 +309,12 @@ export async function embedGemini(texts, task) {
         (j.embeddings || []).forEach(e => out.push(normalize(e.values || [])));
       }
       return { model, vecs: out };
-    } catch (e) { last = e; if (isLocationErr(e)) { blockedUntil.gemini = Date.now() + 5 * 6e4; throw e; } if (!gRetriable(e)) throw e; }
+    } catch (e) {
+      last = e;
+      if (isLocationErr(e)) { blockedUntil.gemini = Date.now() + 5 * 6e4; throw e; }
+      if (e.status === 429) { embedOffUntil = isDaily(e) ? quotaReset() : Date.now() + Math.max(60e3, e.retryMs || 0); throw e; }
+      if (!gRetriable(e)) throw e;
+    }
   }
   throw last;
 }
@@ -702,7 +707,9 @@ export async function plain(system, prompt, opts) {
   }
   throw last || new BrainError("Нет подключённой нейросети", 0, null);
 }
-export const canEmbed = () => configured().includes("gemini") && !isBlocked("gemini");
+// Лимит векторов кончился — не просим их на каждом сообщении (каждая попытка — лишняя задержка перед ответом)
+let embedOffUntil = 0;
+export const canEmbed = () => configured().includes("gemini") && !isBlocked("gemini") && Date.now() > embedOffUntil;
 export async function embed(texts, task) { return canEmbed() ? embedGemini(texts, task) : null; }
 
 /* Распознавание записанной речи нейросетью. */
