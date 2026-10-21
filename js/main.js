@@ -7,7 +7,7 @@ import { relevantFacts, activeFacts, applyActions, stripActions, extractActions,
 import { addDoc, removeDoc, search, fromUrl, fromFile, ensureDocVecs, docsForPrompt } from "./knowledge.js";
 import * as V from "./voice.js";
 
-const VERSION = "3.4.0";
+const VERSION = "3.5.0";
 let mode = "auto", deep = false, photo = null, busy = null;
 
 /* =================== Часы и статус =================== */
@@ -341,7 +341,7 @@ function openTalk() {
   if (!anyBrain()) { toast("Сначала подключи мозг в «Настройках»."); return; }
   V.stopSpeaking(); if (busy) busy.abort();      // старый ответ не должен звучать в микрофон
   talkOn = true; $("#talkView").hidden = false; $("#talkText").textContent = "";
-  $("#talkBrain").textContent = (order()[0] ? BRAINS[order()[0]].name : "") + (V.liveAvailable() ? " · живой голос" : " · голос iPhone");
+  $("#talkBrain").textContent = (order()[0] ? BRAINS[order()[0]].name : "") + " · " + V.engineName();
   talkLoop();
 }
 function closeTalk() {
@@ -560,7 +560,7 @@ $("#teachForm").addEventListener("submit", async e => {
 
 /* =================== Настройки =================== */
 const TEXT_KEYS = ["geminiKey", "mistralKey", "zaiKey", "claudeKey", "claudeModel", "customBase", "customKey", "customModel", "tavilyKey"];
-const SELECT_KEYS = ["brain", "geminiModel", "mistralModel", "voiceMode", "liveVoice", "iosVoice", "sttMode"];
+const SELECT_KEYS = ["brain", "geminiModel", "mistralModel", "voiceMode", "piperVoice", "liveVoice", "iosVoice", "sttMode"];
 const CHECK_KEYS = ["speakOn", "handsFree", "briefing", "autoReminders"];
 function fillGeminiModels() {
   const m = D.meta.models; const sel = $("#geminiModel");
@@ -569,6 +569,9 @@ function fillGeminiModels() {
   sel.value = ids.includes(S.geminiModel) ? S.geminiModel : "auto";
 }
 function fillVoices() {
+  const lv = V.localVoices();
+  $("#piperVoice").innerHTML = Object.entries(lv).map(([id, v]) => `<option value="${id}">${esc(v.name)} — ${esc(v.note)}</option>`).join("");
+  $("#piperVoice").value = lv[S.piperVoice] ? S.piperVoice : Object.keys(lv)[0];
   $("#liveVoice").innerHTML = V.liveVoices().map(v => `<option>${v}</option>`).join(""); $("#liveVoice").value = S.liveVoice;
   const vs = V.loadIOSVoices();
   $("#iosVoice").innerHTML = `<option value="">Автоматически (мужской, если есть)</option>` + vs.map(v => `<option value="${esc(v.voiceURI)}">${esc(v.name)}</option>`).join("");
@@ -590,8 +593,39 @@ TEXT_KEYS.forEach(k => $("#" + k).addEventListener("change", e => {
   S[k] = e.target.value.trim(); saveSettings(); fillSettings();
   if (k === "geminiKey" && S.geminiKey) discoverGemini(true).then(fillGeminiModels).catch(err => toast(explain(err)));
 }));
-SELECT_KEYS.forEach(k => $("#" + k).addEventListener("change", e => { S[k] = e.target.value; saveSettings(); fillSettings(); }));
+SELECT_KEYS.forEach(k => $("#" + k).addEventListener("change", e => { S[k] = e.target.value; saveSettings(); fillSettings(); if (k === "voiceMode" || k === "piperVoice") updateLocal(); }));
 CHECK_KEYS.forEach(k => $("#" + k).addEventListener("change", e => { S[k] = e.target.checked; saveSettings(); if (k === "speakOn" && !S.speakOn) V.stopSpeaking(); }));
+/* ---------- Голос на телефоне ---------- */
+let localBusy = false;
+async function updateLocal() {
+  $("#localBox").hidden = S.voiceMode !== "local"; $("#liveBox").hidden = S.voiceMode !== "live";
+  $("#pace").value = S.pace; $("#paceVal").textContent = (+S.pace >= 1.15 ? "медленнее" : +S.pace <= 0.95 ? "быстрее" : "спокойный");
+  if (localBusy) return;
+  const ok = await V.refreshLocal();
+  const name = (V.localVoices()[S.piperVoice] || {}).name || "";
+  $("#localState").textContent = ok ? `✅ Голос «${name}» скачан и работает на телефоне.` : `Голос «${name}» ещё не скачан — пока говорю голосом iPhone.`;
+  $("#localGet").hidden = ok; $("#localDel").hidden = !ok;
+  if (ok) V.warmLocal();
+}
+async function getLocalVoice(btn, out) {
+  if (localBusy) return; localBusy = true; btn.disabled = true;
+  const show = t => { if (out) out.textContent = t; $("#localState").textContent = t; };
+  try {
+    show("Скачиваю голос… 0%");
+    await V.downloadLocal((got, total) => show(`Скачиваю голос… ${Math.min(99, Math.round(got / total * 100))}% (${(got / 1048576).toFixed(0)} из ${(total / 1048576).toFixed(0)} МБ)`));
+    show("Готовлю голос…");
+    V.warmLocal();
+    localBusy = false; await updateLocal(); idleStatus();
+    V.unlock(); V.speak("Сумрак, теперь я говорю вот так. Спокойно и по-человечески.", { force: true }).finally(syncSendBtn);
+    return true;
+  } catch (e) {
+    show("Не получилось скачать голос: " + (e.message || e) + ". Проверь интернет (может понадобиться VPN) и попробуй ещё раз.");
+    return false;
+  } finally { localBusy = false; btn.disabled = false; }
+}
+$("#localGet").onclick = e => { V.unlock(); getLocalVoice(e.target); };
+$("#localDel").onclick = async () => { await V.removeLocal(); updateLocal(); toast("Голос удалён с телефона.", 2000); };
+$("#pace").oninput = e => { S.pace = +e.target.value; saveSettings(); updateLocal(); };
 $("#rate").oninput = e => { S.rate = +e.target.value; $("#rateVal").textContent = "×" + S.rate.toFixed(2); saveSettings(); };
 $("#testVoice").onclick = () => { V.unlock(); V.speak("Сумрак, я на связи. Так звучит мой голос.", { force: true }).finally(syncSendBtn); syncSendBtn(); };
 $("#testReminder").onclick = () => sendToIOS({ text: "Проверка: Дмитрий Павлов", due: Date.now() + 2 * 6e4 });
@@ -625,6 +659,7 @@ $("#diagBtn").onclick = async e => {
     try { await ttsGemini("Проверка.", S.liveVoice); add(true, "Живой голос", "работает · " + S.liveVoice); }
     catch (err) { add(false, "Живой голос", explain(err) + " — буду говорить голосом iPhone"); }
   } else add(null, "Живой голос", "нужен Gemini (с VPN); сейчас — голос iPhone");
+  add(S.voiceMode !== "local" ? null : V.localAvailable() ? true : false, "Голос на телефоне", S.voiceMode !== "local" ? "выключен (выбран другой голос)" : V.localAvailable() ? "скачан, работает без лимитов" : "не скачан — «Настройки» → «Голос» → «Скачать голос»");
   const vs = V.loadIOSVoices(); add(vs.length ? true : null, "Голос iPhone", vs.length ? vs.map(v => v.name).join(", ") : "русских голосов не найдено — скачай «Юрий» в настройках iPhone");
   diagReport = "Дмитрий Павлов — проверка " + new Date().toLocaleString("ru-RU") + "\n" + rows.map(r => `${r.ok === true ? "OK" : r.ok === false ? "ОШИБКА" : "внимание"} | ${r.name}: ${r.info}`).join("\n");
   $("#diagCopy").hidden = false; btn.disabled = false; btn.textContent = "Проверить ещё раз";
@@ -678,6 +713,16 @@ $("#ver").textContent = "версия " + VERSION;
 setQuotaHandler(ok => toast(ok ? "Память телефона почти заполнена — я сократил старую переписку. Сделай резервную копию." : "Память телефона переполнена — последние изменения могли не сохраниться. Сделай копию и удали лишние материалы."));
 tickClock(); setInterval(tickClock, 1000);
 renderModes(); fillSettings(); fillGeminiModels(); fillVoices(); renderLists(); renderChat(); setTab("chat");
+updateLocal().then(() => {
+  // Нормальный мужской голос ещё не скачан — предложим один раз в несколько дней
+  if (S.voiceMode !== "local" || V.localAvailable() || !anyBrain() || Date.now() - (D.meta.voiceOffer || 0) < 3 * 864e5) return;
+  D.meta.voiceOffer = Date.now(); persist();
+  const el = addMsg("ai", "Сумрак, хочешь, чтобы я говорил нормальным мужским голосом, а не роботом? Скачай голос один раз (около 90 МБ, лучше по Wi-Fi) — дальше он работает прямо на телефоне, бесплатно и без лимитов.");
+  const box = document.createElement("div"); box.className = "acts";
+  const out = document.createElement("div"); out.className = "small";
+  box.append(pill("⬇️ Скачать голос Дмитрия", e => { V.unlock(); getLocalVoice(e.target, out); }));
+  el.append(box, out);
+});
 try { speechSynthesis.onvoiceschanged = fillVoices; } catch {}
 V.onSpeakingChange(syncSendBtn);
 setInterval(() => { checkReminders(); syncSendBtn(); }, 10000); checkReminders();

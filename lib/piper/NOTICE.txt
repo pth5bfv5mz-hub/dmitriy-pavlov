@@ -1,0 +1,11 @@
+Голос Дмитрия на устройстве (Piper TTS) — сторонние компоненты:
+
+- ONNX Runtime Web 1.18.0 (ort/) — MIT, © Microsoft. https://github.com/microsoft/onnxruntime
+- piper_phonemize (piper_phonemize.wasm, piper_phonemize.data) из @diffusionstudio/piper-wasm 1.0.0 — MIT.
+  Содержит сборку espeak-ng и её данные произношения — GPL-3.0-or-later.
+  Исходный код: https://github.com/rhasspy/piper-phonemize , https://github.com/espeak-ng/espeak-ng ,
+  https://github.com/diffusion-studio/piper-wasm
+- phonemize.js — загрузчик из @mintplex-labs/piper-tts-web 1.0.5 — MIT. https://github.com/Mintplex-Labs/piper-tts-web
+- Модели голосов (ru_RU dmitri / denis / ruslan / irina, проект Piper, https://github.com/rhasspy/piper)
+  не хранятся в этом репозитории: приложение скачивает их с Hugging Face при первом включении голоса.
+  Лицензии моделей — в их карточках: https://huggingface.co/rhasspy/piper-voices

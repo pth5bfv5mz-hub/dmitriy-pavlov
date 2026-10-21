@@ -13,7 +13,8 @@ export const DEFAULTS = {
   claudeKey: "", claudeModel: "claude-sonnet-5-5",
   customBase: "", customKey: "", customModel: "",
   tavilyKey: "",
-  voiceMode: "live",             // live (нейросеть) | ios
+  voiceMode: "local",            // local (нейросеть на телефоне) | live (Gemini) | ios
+  piperVoice: "ru_RU-dmitri-medium", pace: 1.08,   // спокойный темп: чуть медленнее обычного
   liveVoice: "Charon", iosVoice: "", rate: 1.0,
   speakOn: true, handsFree: true, autoReminders: false, briefing: true,
   sttMode: "auto",               // auto | neural | ios
@@ -28,6 +29,8 @@ function migrate(s) {
     delete s.provider; delete s.oaBase; delete s.oaKey; delete s.oaModel; delete s.voice;
   }
   if (/^gemini-2\.5-/.test(s.geminiModel || "") || /latest$/.test(s.geminiModel || "")) s.geminiModel = "auto";
+  // 3.5: живой голос Gemini почти всегда упирался в лимит — по умолчанию голос на телефоне
+  if (!s.voiceMig35) { if (s.voiceMode === "live") s.voiceMode = "local"; s.voiceMig35 = true; }
   return s;
 }
 export const S = Object.assign({}, DEFAULTS, migrate(load("settings", {})));

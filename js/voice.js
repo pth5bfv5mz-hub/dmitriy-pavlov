@@ -3,6 +3,7 @@
    Конец фразы — по тишине. Говорим живым голосом Gemini, запасной — голос iPhone. */
 import { S } from "./store.js";
 import { transcribe, canTranscribe, ttsGemini, canTTS } from "./brains.js";
+import * as P from "./piper.js";
 
 /* ---------- Звук ---------- */
 /* iOS после записи с микрофона переключает звук в «разговорный» режим (динамик у уха) —
@@ -129,8 +130,10 @@ export async function listen(opts = {}) {
   throw new Error(canRecord() ? "no-stt" : "no-mic");
 }
 
-/* ---------- Речь ---------- */
-let playing = null, token = 0, liveCooldown = 0, onChange = () => {};
+/* ---------- Речь ----------
+   Три голоса по порядку: «на телефоне» (нейросеть Piper — мужской, бесплатно, без лимитов),
+   «живой» Gemini (лимит маленький), голос iPhone (всегда есть). Не сработал один — говорит следующий. */
+let playing = null, token = 0, liveCooldown = 0, localCooldown = 0, onChange = () => {};
 export const speaking = () => !!playing;
 export const onSpeakingChange = f => { onChange = f || (() => {}); };
 const setPlaying = p => { playing = p; try { onChange(!!p); } catch {} };
@@ -147,59 +150,56 @@ export function speakable(text, full) {
   for (const p of parts) { if ((out + p).length > 550) break; out += p; }
   return (out || t.slice(0, 550)).trim() + " Остальное — на экране.";
 }
-function splitForSpeech(t) {
-  const parts = t.match(/[^.!?…]+[.!?…]*\s*/g) || [t];
-  const first = []; let len = 0, i = 0;
-  for (; i < parts.length && (len < 90 || !first.length); i++) { first.push(parts[i]); len += parts[i].length; if (len > 220) { i++; break; } }
-  return [first.join("").trim(), parts.slice(i).join("").trim()].filter(Boolean);
-}
+const sentences = t => { const out = []; let cur = ""; (t.match(/[^.!?…]+[.!?…]*\s*/g) || [t]).forEach(p => { if ((cur + p).length > 200 && cur) { out.push(cur.trim()); cur = ""; } cur += p; }); if (cur.trim()) out.push(cur.trim()); return out; };
 const VOICES_LIVE = ["Charon", "Orus", "Fenrir", "Iapetus", "Algenib", "Alnilam", "Enceladus", "Puck", "Umbriel", "Schedar", "Sadaltager", "Rasalgethi"];
 export const liveVoices = () => VOICES_LIVE;
 export const liveAvailable = () => S.voiceMode === "live" && canTTS() && Date.now() > liveCooldown;
 
+/* Голос на телефоне: скачан ли он. */
+let localOK = false;
+export const localVoices = () => P.VOICES;
+export const localAvailable = () => S.voiceMode === "local" && localOK && Date.now() > localCooldown;
+export async function refreshLocal() { localOK = await P.isDownloaded(S.piperVoice); return localOK; }
+export async function downloadLocal(onProgress) { await P.download(S.piperVoice, onProgress); localOK = true; localCooldown = 0; }
+export async function removeLocal() { await P.remove(S.piperVoice); localOK = false; }
+/* Заранее загрузить голос в память, чтобы первый ответ прозвучал без задержки. */
+let warmed = "";
+export function warmLocal() {
+  if (!localAvailable() || warmed === S.piperVoice) return;
+  warmed = S.piperVoice;
+  // загрузить модель и один раз «прогнать» короткую фразу — тогда первый настоящий ответ прозвучит сразу
+  setTimeout(() => P.synth("А.", S.piperVoice).catch(() => { warmed = ""; }), 1500);
+}
+export const engineName = () => localAvailable() ? "голос " + (P.VOICES[S.piperVoice]?.name || "на телефоне") : liveAvailable() ? "живой голос" : "голос iPhone";
+
 /* Говорить. Возвращает промис, который завершается, когда речь закончилась (или прервана). */
 export async function speak(text, { force, full } = {}) {
   if ((!S.speakOn && !force) || !text) return;
-  stopSpeaking();
-  if (!current) audioSession("playback");
-  const my = ++token;
-  const t = speakable(text, full);
-  if (liveAvailable()) {
-    const parts = splitForSpeech(t);
-    const reqs = parts.map(p => ttsGemini(p, S.liveVoice));   // первая фраза приходит быстрее — начинаем с неё
-    reqs.forEach(r => r.catch(() => {}));
-    let i = 0;
-    try {
-      for (; i < reqs.length; i++) {
-        const audio = await reqs[i];
-        if (my !== token) return;
-        await playAudio(audio, my);
-        if (my !== token) return;
-      }
-      return;
-    } catch (e) {
-      if (my !== token) return;
-      if (!e || e.message !== "audio-off") liveCooldown = Date.now() + 10 * 6e4;   // лимит или сбой — 10 минут говорим голосом iPhone
-      return speakIOS(parts.slice(i).join(" "), my);
-    }
-  }
-  return speakIOS(t, my);
+  const sp = createSpeaker({});
+  sentences(speakable(text, full)).forEach(sp.add);
+  return sp.end();
 }
 /* Потоковая речь: фразы добавляются по мере того, как нейросеть пишет ответ.
-   Звук для следующей фразы запрашивается заранее, пока звучит текущая. */
+   Звук следующей фразы готовится заранее, пока звучит текущая. */
 export function createSpeaker({ limit = 0 } = {}) {
   stopSpeaking();
   if (!current) audioSession("playback");
   const my = ++token;
-  const segs = []; let closed = false, wake = null, total = 0, cut = false, live = liveAvailable();
+  let engine = localAvailable() ? "local" : liveAvailable() ? "live" : "ios";
+  const segs = []; let closed = false, wake = null, total = 0, cut = false;
   const notify = () => { if (wake) { const w = wake; wake = null; w(); } };
-  const ask = seg => { seg.audio = ttsGemini(seg.text, S.liveVoice); seg.audio.catch(() => {}); };
+  // спокойнее: чуть медленнее обычного (S.pace — множитель длительности)
+  const ask = seg => {
+    if (engine === "local") seg.audio = P.synth(seg.text, S.piperVoice, { pace: +S.pace || 1.08 });
+    else if (engine === "live") seg.audio = ttsGemini(seg.text, S.liveVoice);
+    if (seg.audio) seg.audio.catch(() => {});
+  };
   const add = text => {
     if (cut || my !== token) return;
     let t = speakable(text, true); if (!t) return;
     if (limit && total + t.length > limit) { t = total ? "Остальное — на экране." : t.slice(0, limit); cut = true; }
     total += t.length;
-    const seg = { text: t }; if (live) ask(seg);
+    const seg = { text: t }; ask(seg);
     segs.push(seg); notify();
   };
   const run = (async () => {
@@ -207,9 +207,16 @@ export function createSpeaker({ limit = 0 } = {}) {
       while (i >= segs.length) { if (closed || my !== token) return; await new Promise(r => { wake = r; }); }
       if (my !== token) return;
       const seg = segs[i];
-      if (live && seg.audio) {
+      if (seg.audio) {
         try { await playAudio(await seg.audio, my); continue; }
-        catch (e) { if (my !== token) return; live = false; if (!e || e.message !== "audio-off") liveCooldown = Date.now() + 10 * 6e4; }
+        catch (e) {
+          if (my !== token) return;
+          const offAudio = e && e.message === "audio-off";
+          if (engine === "local" && !offAudio) { localCooldown = Date.now() + 5 * 6e4; if (e && e.message === "not-downloaded") localOK = false; }
+          if (engine === "live" && !offAudio) liveCooldown = Date.now() + 10 * 6e4;   // лимит или сбой — 10 минут без живого голоса
+          // дальше — голосом iPhone, без повторного заказа звука
+          engine = "ios"; segs.forEach((s, j) => { if (j > i) s.audio = null; });
+        }
       }
       await speakIOS(seg.text, my);
     }
@@ -221,19 +228,23 @@ export function createSpeaker({ limit = 0 } = {}) {
   };
 }
 const sleep = ms => new Promise(r => setTimeout(r, ms));
-async function playAudio({ mime, b64 }, my) {
+async function playAudio(a, my) {
   const c = audioCtx();
   if (c.state !== "running") { try { await Promise.race([c.resume(), sleep(800)]); } catch {} }
   if (c.state !== "running") throw new Error("audio-off");   // звук не запустился — пусть говорит iPhone
-  const bytes = Uint8Array.from(atob(b64), ch => ch.charCodeAt(0));
   let buf;
-  if (/wav|mpeg|mp3|ogg|aac|mp4/i.test(mime)) {
-    buf = await new Promise((res, rej) => c.decodeAudioData(bytes.buffer.slice(0), res, rej));
-  } else {   // audio/L16;rate=24000 — 16-битный PCM
-    const rate = +(mime.match(/rate=(\d+)/) || [0, 24000])[1];
-    const n = Math.floor(bytes.length / 2), dv = new DataView(bytes.buffer);
-    buf = c.createBuffer(1, n, rate); const ch = buf.getChannelData(0);
-    for (let i = 0; i < n; i++) ch[i] = dv.getInt16(i * 2, true) / 32768;
+  if (a.pcm) {   // голос на телефоне: готовые отсчёты
+    buf = c.createBuffer(1, a.pcm.length, a.rate); buf.getChannelData(0).set(a.pcm);
+  } else {
+    const bytes = Uint8Array.from(atob(a.b64), ch => ch.charCodeAt(0));
+    if (/wav|mpeg|mp3|ogg|aac|mp4/i.test(a.mime)) {
+      buf = await new Promise((res, rej) => c.decodeAudioData(bytes.buffer.slice(0), res, rej));
+    } else {   // audio/L16;rate=24000 — 16-битный PCM
+      const rate = +(a.mime.match(/rate=(\d+)/) || [0, 24000])[1];
+      const n = Math.floor(bytes.length / 2), dv = new DataView(bytes.buffer);
+      buf = c.createBuffer(1, n, rate); const ch = buf.getChannelData(0);
+      for (let i = 0; i < n; i++) ch[i] = dv.getInt16(i * 2, true) / 32768;
+    }
   }
   if (my !== token) return;
   await new Promise(resolve => {

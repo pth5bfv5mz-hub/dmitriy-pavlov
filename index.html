@@ -181,9 +181,24 @@
 
       <h2>Голос</h2>
       <div class="field">
-        <label for="voiceMode">Голос Дмитрия</label>
-        <select id="voiceMode"><option value="live">Живой голос нейросети (нужен Gemini)</option><option value="ios">Голос iPhone</option></select>
-        <label for="liveVoice">Живой голос</label><select id="liveVoice"></select>
+        <label for="voiceMode">Чем говорит Дмитрий</label>
+        <select id="voiceMode">
+          <option value="local">Нейросеть на телефоне — естественный голос, бесплатно, без лимитов (рекомендую)</option>
+          <option value="live">Живой голос Gemini (маленький дневной лимит)</option>
+          <option value="ios">Встроенный голос iPhone</option>
+        </select>
+        <div id="localBox">
+          <label for="piperVoice">Голос</label><select id="piperVoice"></select>
+          <p class="small" id="localState">Проверяю…</p>
+          <div class="row-btns">
+            <button type="button" class="primary-btn" id="localGet">Скачать голос</button>
+            <button type="button" id="localDel" hidden>Удалить</button>
+          </div>
+          <p class="small">Скачивается один раз, около 90 МБ — лучше по Wi-Fi. Дальше голос работает прямо на телефоне, даже без интернета.</p>
+          <label for="pace">Темп речи <span id="paceVal"></span></label>
+          <input id="pace" type="range" min="0.8" max="1.4" step="0.02">
+        </div>
+        <div id="liveBox"><label for="liveVoice">Голос Gemini</label><select id="liveVoice"></select></div>
         <label for="iosVoice">Голос iPhone (запасной)</label><select id="iosVoice"></select>
         <p class="small">Мужской голос iPhone «Юрий»: Настройки → Универсальный доступ → Устный контент → Голоса → Русский → Юрий.</p>
         <label for="rate">Скорость голоса iPhone <span id="rateVal"></span></label>
