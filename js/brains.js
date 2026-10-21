@@ -54,7 +54,7 @@ export function quotaReset() {
 }
 const isDaily = e => e && e.status === 429 && (e.daily || /per.?day|daily|PerDay/i.test(e.message || ""));
 export const isLocationErr = e => /location is not supported|User location|unsupported_country|not available in your (country|region)/i.test(String(e && e.message));
-const isKeyErr = e => e && (e.status === 401 || /API key not valid|API_KEY_INVALID|invalid api key|Unauthorized/i.test(e.message || ""));
+export const isKeyErr = e => e && (e.status === 401 || /API key not valid|API_KEY_INVALID|invalid api key|Unauthorized/i.test(e.message || ""));
 export function explain(e) {
   const m = String(e && e.message || ""), s = e && e.status, b = e && e.brain, who = b ? BRAINS[b]?.name || b : "Нейросеть";
   const other = b === "gemini" ? "без VPN поможет Mistral или Z.ai" : "с VPN поможет Gemini";
@@ -312,7 +312,7 @@ export async function embedGemini(texts, task) {
     } catch (e) {
       last = e;
       if (isLocationErr(e)) { blockedUntil.gemini = Date.now() + 5 * 6e4; throw e; }
-      if (e.status === 429) { embedOffUntil = isDaily(e) ? quotaReset() : Date.now() + Math.max(60e3, e.retryMs || 0); throw e; }
+      if (e.status === 429) { if (model !== models[models.length - 1]) continue; embedOffUntil = isDaily(e) ? quotaReset() : Date.now() + Math.max(60e3, e.retryMs || 0); throw e; }
       if (!gRetriable(e)) throw e;
     }
   }
@@ -399,26 +399,29 @@ const TOOLS = [
 async function getJSON(url, opts) { const r = await fetch(url, opts); if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); }
 /* Поиск Google через Gemini — для Mistral и других мозгов без своего поиска.
    Скудный дневной лимит Gemini так тратится на самое ценное, что он умеет, — поиск, а не на болтовню. */
-async function googleViaGemini(q, sources) {
+async function googleViaGemini(q, sources, signal) {
   if (!configured().includes("gemini") || isBlocked("gemini") || Date.now() <= searchOffUntil) return null;
   for (const model of (await gModels("chat")).filter(m => !isGemma(m)).slice(0, 3)) {
     try {
       const body = { contents: [{ role: "user", parts: [{ text: `Найди в интернете свежую информацию: ${q}\nДай сжатую сводку фактов по-русски: цифры, даты, кто/что/где, с указанием источников. Без советов и воды. Не нашёл — так и скажи.` }] }],
         tools: [{ google_search: {} }], generationConfig: { temperature: 0.2, ...(thinkOff && /^gemini-2\.5-flash/.test(model) ? { thinkingConfig: { thinkingBudget: 0 } } : {}) } };
-      const r = await gStream(model, body, () => {});
+      const r = await gStream(model, body, () => {}, signal);
       bump("gemini");
+      if (!r.sources.length) return null;   // ответил по памяти, без поиска — это не «результат Google»; дальше Википедия
       r.sources.forEach(x => sources.push(x));
       return { answer: neutralize(r.text).slice(0, 3000), via: "Google (через Gemini)", results: r.sources.map(x => ({ title: x.title, url: x.url })) };
     } catch (e) {
       if (isLocationErr(e)) { blockedUntil.gemini = Date.now() + 5 * 6e4; return null; }
-      if (e.status === 429 && /ground|search/i.test(e.message || "")) { searchOffUntil = Date.now() + 36e5; return null; }   // кончился лимит поиска
+      if (e.name === "AbortError") throw e;
+      // Любой лимит при поиске считаем лимитом поиска (как в обычном ответе) — модель для разговора не «хороним»
+      if (e.status === 429) { searchOffUntil = Date.now() + 36e5; return null; }
       markDead(model, e);
       if (!gRetriable(e)) return null;
     }
   }
   return null;
 }
-async function toolWebSearch(q, sources) {
+async function toolWebSearch(q, sources, signal) {
   if (S.tavilyKey) {
     try {
       const j = await getJSON("https://api.tavily.com/search", { method: "POST", headers: { "Content-Type": "application/json", "Authorization": "Bearer " + S.tavilyKey.trim() },
@@ -427,7 +430,7 @@ async function toolWebSearch(q, sources) {
       return { answer: j.answer, results: (j.results || []).map(r => ({ title: r.title, url: r.url, text: (r.content || "").slice(0, 1200) })) };
     } catch {}
   }
-  const g = await googleViaGemini(q, sources).catch(() => null);
+  const g = await googleViaGemini(q, sources, signal).catch(e => { if (e && e.name === "AbortError") throw e; return null; });
   if (g && g.answer) return g;
   const out = [];
   for (const lang of ["ru", "en"]) {
@@ -482,7 +485,7 @@ function urlAllowed(url, list) {
     return t.pathname === a.pathname || t.pathname.startsWith(base) || a.pathname === "/";
   });
 }
-async function runTool(call, sources, allowed = new Set()) {
+async function runTool(call, sources, allowed = new Set(), signal) {
   let a = {}; try { a = JSON.parse(call.function.arguments || "{}"); } catch {}
   try {
     if (call.function.name === "get_weather") { sources.push({ url: "https://open-meteo.com", title: "Open-Meteo (погода)" }); return await toolWeather(String(a.city || "")); }
@@ -494,8 +497,8 @@ async function runTool(call, sources, allowed = new Set()) {
       if (!ok) return "Эту ссылку открыть нельзя: открываю только ссылки из сообщения Сумрака или из результатов поиска.";
       const t = await readUrl(url); sources.push({ url, title: "" }); return t;
     }
-    return await toolWebSearch(String(a.query || ""), sources);
-  } catch (e) { return "Ошибка инструмента: " + e.message; }
+    return await toolWebSearch(String(a.query || ""), sources, signal);
+  } catch (e) { if (e && e.name === "AbortError") throw e; return "Ошибка инструмента: " + e.message; }
 }
 // Mistral и Z.ai на бесплатном плане: 1 запрос в секунду. Разносим вызовы, чтобы не ловить 429.
 const lastCall = {};
@@ -542,7 +545,7 @@ async function chatCompat(brain, { system, hist, img, onText, onStatus, onReset,
     if (m.tool_calls && m.tool_calls.length) {
       messages.push({ role: "assistant", content: m.content || "", tool_calls: m.tool_calls });
       (onStatus || onText)(m.tool_calls.some(t => t.function.name === "web_search") ? "Ищу в интернете…" : "Смотрю…");
-      for (const call of m.tool_calls) messages.push({ role: "tool", tool_call_id: call.id, name: call.function.name, content: neutralize(JSON.stringify(await runTool(call, sources, allowed))).slice(0, 14000) });
+      for (const call of m.tool_calls) messages.push({ role: "tool", tool_call_id: call.id, name: call.function.name, content: neutralize(JSON.stringify(await runTool(call, sources, allowed, signal))).slice(0, 14000) });
       continue;
     }
     const text = typeof m.content === "string" ? m.content : (m.content || []).map(p => p.text || "").join("");

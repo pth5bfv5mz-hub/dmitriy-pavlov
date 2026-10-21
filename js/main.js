@@ -1,7 +1,7 @@
 /* Дмитрий Павлов 3.0 — сборка интерфейса. */
 import { $, $$, uid, esc, md, plural, fmtDue, fmtAgo, isoLocal, hm, dayStart, todayKey, parseLocal, nextDue, pad, REPEAT_TXT, DAYS, MONTHS } from "./util.js";
 import { S, D, saveSettings, persist, exportAll, importAll, idbAll, setQuotaHandler, dataVersion } from "./store.js";
-import { chat, plain, order, anyBrain, configured, BRAINS, explain, discoverGemini, ping, canTranscribe, canTTS, isBlocked, ttsGemini, discoverOpenRouter } from "./brains.js";
+import { chat, plain, order, anyBrain, configured, BRAINS, explain, discoverGemini, ping, canTranscribe, canTTS, isBlocked, ttsGemini, discoverOpenRouter, isKeyErr } from "./brains.js";
 // Признаки «не знаю свежего» в ответе модели без поиска
 const NOKNOW_RE = /(нет|не имею) (доступа|возможности)[^.]{0,30}(интернет|актуальн|свеж|реальн|текущ)|не могу (проверить|знать|посмотреть|найти)[^.]{0,25}(интернет|актуальн|текущ|сейчас|сегодня)|на момент (моего )?(обучения|последнего обновления)|(у меня )?нет (актуальн|свеж)[а-я]* (данных|информации|сведений)|не располагаю (актуальн|свеж)|мои (данные|знания) (ограничены|заканчиваются)|рекомендую (проверить|уточнить) на (официальн|сайт)/i;
 import { buildPrompt, MODES } from "./prompt.js";
@@ -9,7 +9,7 @@ import { relevantFacts, activeFacts, applyActions, stripActions, extractActions,
 import { addDoc, removeDoc, search, fromUrl, fromFile, ensureDocVecs, docsForPrompt } from "./knowledge.js";
 import * as V from "./voice.js";
 
-const VERSION = "3.13.1";
+const VERSION = "3.13.2";
 let mode = "auto", deep = false, photo = null, busy = null, lastFail = "";
 
 /* =================== Часы и статус =================== */
@@ -30,7 +30,7 @@ function idleStatus() {
   if (!list.length) return status("Нужно подключить мозг");
   const b = list[0];
   // Последний ответ не удался — не делаем вид, что всё в порядке (до следующего удачного ответа)
-  if (lastFail) return status(lastFail, "warn"), syncSendBtn();
+  if (lastFail) return status(lastFail + (D.meta.tempChat ? " · инкогнито" : ""), "warn"), syncSendBtn();
   status("На связи · " + BRAINS[b].name + (D.meta.tempChat ? " · инкогнито" : ""), "on");
   syncSendBtn();
 }
@@ -136,7 +136,7 @@ function greeting() {
   const h = new Date().getHours();
   const g = h < 5 ? "Доброй ночи" : h < 12 ? "Доброе утро" : h < 18 ? "Добрый день" : "Добрый вечер";
   const now = Date.now();
-  const over = D.tasks.filter(t => !t.done && t.notified && t.due && t.due < now && now - t.due < 7 * 864e5 && !t.repeat);
+  const over = D.tasks.filter(t => !t.done && (t.notified || now - t.due >= 864e5) && t.due && t.due < now && now - t.due < 7 * 864e5 && !t.repeat);
   const late = over.length ? `\n\nНе закрыто: ${over.slice(0, 3).map(t => "«" + t.text + "»").join(", ")}${over.length > 3 ? " и ещё " + (over.length - 3) : ""}. Сделано или перенести?` : "";
   return `${g}, Сумрак. Я на связи. Говори или пиши.${late}`;
 }
@@ -161,7 +161,7 @@ function rememberAsk(text) {
   D.msgs.push({ role: "ai", text, ts: Date.now() }); persist();
 }
 /* Первый запуск: один рекомендуемый путь (Mistral — работает без VPN), по шагам, с проверкой ключа. */
-let pendingAsk = "";   // вопрос, заданный до подключения, — отвечу сразу после
+let pendingAsk = "", pendingImg = null;   // вопрос (и фото), заданные до подключения, — отвечу сразу после
 function showSetupCard() {
   const el = document.createElement("div"); el.className = "msg ai setup";
   el.innerHTML = `<div class="by">Дмитрий Павлов</div>
@@ -180,7 +180,7 @@ function showSetupCard() {
       </details>
       <button type="button" id="qSave" class="primary-btn">Подключить</button>
       <p class="small" id="qMsg" role="status"></p>
-      <p class="small">Ключи остаются только на этом телефоне. <a href="guide.html#brain">Подробная инструкция</a></p>
+      <p class="small">Ключи остаются только на этом телефоне. <a href="guide.html#brain" target="_blank" rel="noopener">Подробная инструкция</a></p>
     </div>`;
   $("#log").append(el);
   const msg = t => { el.querySelector("#qMsg").textContent = t; };
@@ -194,17 +194,26 @@ function showSetupCard() {
     const btn = e.target; btn.disabled = true; btn.textContent = "Проверяю связь…"; msg("");
     if (g) S.geminiKey = g; if (m) S.mistralKey = m;
     saveSettings();
-    const ok = [], bad = [];
+    const works = [], kept = [], bad = [];
     for (const b of [m && "mistral", g && "gemini"].filter(Boolean)) {
-      try { await ping(b); ok.push(b); }
-      catch (err) { bad.push(explain(err)); if (b === "gemini") S.geminiKey = ""; else S.mistralKey = ""; }   // неверный ключ не оставляем
+      try { await ping(b); works.push(b); }
+      catch (err) {
+        bad.push(explain(err));
+        if (isKeyErr(err)) { if (b === "gemini") S.geminiKey = ""; else S.mistralKey = ""; }   // неверный ключ не оставляем
+        else kept.push(b);   // ключ верный, но сейчас нет доступа (VPN, лимит, сеть) — сохраняем
+      }
     }
     saveSettings(); fillSettings(); idleStatus();
-    if (!ok.length) { btn.disabled = false; btn.textContent = "Подключить"; msg("Не получилось: " + bad.join(" ") + " Проверь, что ключ скопирован целиком."); return; }
+    if (!works.length && !kept.length) { btn.disabled = false; btn.textContent = "Подключить"; msg("Не получилось: " + bad.join(" ") + " Проверь, что ключ скопирован целиком."); return; }
     el.remove();
-    addMsg("ai", "Готово, я на связи. Можешь говорить или писать." + (bad.length ? "\n\n⚠️ Второй ключ не подошёл: " + bad.join(" ") : ""));
     discoverGemini().then(fillGeminiModels).catch(() => {});
-    if (pendingAsk) { const q = pendingAsk; pendingAsk = ""; send(q, { retry: true }).catch(() => {}); }
+    if (!works.length) {   // ключ сохранён, но ответа пока нет — честно, без «я на связи»
+      addMsg("ai", "Ключ сохранил, но сейчас нейросеть не отвечает: " + bad.join(" ") + "\n\nПопробуй написать чуть позже.");
+      return;
+    }
+    addMsg("ai", "Готово, я на связи. Можешь говорить или писать." + (bad.length ? "\n\n⚠️ Второй пока не отвечает: " + bad.join(" ") : ""));
+    lastFail = ""; idleStatus();
+    if (pendingAsk) { const q = pendingAsk, img = pendingImg; pendingAsk = ""; pendingImg = null; send(q, { retry: true, img }).catch(() => {}); }
   };
   // Открываем карточку с начала, а не прокрученной до середины
   setTimeout(() => el.scrollIntoView({ block: "start" }), 0);
@@ -247,7 +256,7 @@ async function send(text, opts = {}) {
     D.msgs.push({ role: "user", text, ts: Date.now(), photo: !!img, temp }); persist();
   }
   if (!anyBrain()) {
-    pendingAsk = text;
+    pendingAsk = text; pendingImg = img;
     addMsg("sys", $("#log .setup") ? "Сначала подключи мозг — карточка выше. Твой вопрос я запомнил и отвечу сразу после подключения." : "Сначала подключи мозг: вставь ключ во вкладке «Настройки».");
     return "";
   }
@@ -495,7 +504,7 @@ function spokenGreeting() {
   const now = Date.now(), end = dayStart(new Date()) + 864e5;
   const today = D.tasks.filter(t => !t.done && t.due && t.due >= now && t.due < end).sort((a, b) => a.due - b.due);
   const tail = today.length ? ` Сегодня у тебя: ${today.slice(0, 2).map(t => t.text + " в " + hm(new Date(t.due))).join(", ")}.` : "";
-  const over = D.tasks.filter(t => !t.done && t.notified && t.due && t.due < now && now - t.due < 7 * 864e5 && !t.repeat);
+  const over = D.tasks.filter(t => !t.done && (t.notified || now - t.due >= 864e5) && t.due && t.due < now && now - t.due < 7 * 864e5 && !t.repeat);
   const late = over.length ? ` Не закрыто с прошлого: ${over.slice(0, 2).map(t => t.text).join(", ")}${over.length > 2 ? " и ещё " + (over.length - 2) : ""} — сделано или перенести?` : "";
   return `${g}, Сумрак.${tail}${late} Слушаю тебя.`;
 }
@@ -789,7 +798,7 @@ function fillSettings() {
   idleStatus();
 }
 TEXT_KEYS.forEach(k => $("#" + k).addEventListener("change", e => {
-  S[k] = e.target.value.trim(); saveSettings(); fillSettings();
+  S[k] = e.target.value.trim(); saveSettings(); lastFail = ""; fillSettings();
   // Новый ключ — новые лимиты: забываем, какие модели были исчерпаны у старого
   if (k === "geminiKey") { D.meta.deadModels = {}; D.meta.models = null; persist(); }
   if (k === "geminiKey" && S.geminiKey) discoverGemini(true).then(fillGeminiModels).catch(err => toast(explain(err)));
@@ -871,7 +880,7 @@ $("#diagCopy").onclick = async () => { try { await navigator.clipboard.writeText
 /* =================== Данные =================== */
 let backupCache = "", backupVer = -1;
 async function prepBackup() { try { const v = dataVersion(); backupCache = JSON.stringify(await exportAll()); backupVer = v; } catch {} }
-const backedUp = () => { D.meta.lastBackup = Date.now(); persist(); setTimeout(prepBackup, 500); };
+const backedUp = () => { D.meta.lastBackup = Date.now(); persist(); $("#lastBackup").textContent = "Последняя копия — только что."; setTimeout(prepBackup, 500); };
 /* Сохранить копию: «Поделиться» → Файлы/AirDrop/почта; запасной путь — буфер обмена. JSON готовится заранее,
    потому что iPhone разрешает «Поделиться» только сразу после касания. */
 async function doBackup() {
