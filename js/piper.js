@@ -86,22 +86,30 @@ function phonAssets() {
   ]).then(([wasm, data, m]) => ({ wasm, data, create: m.createPiperPhonemize })).catch(e => { phonP = null; throw e; });
   return phonP;
 }
-async function phonemize(text, voice) {
+/* Один экземпляр фонемизатора на всё время работы: раньше на каждую фразу создавался новый
+   (19 МБ данных в памяти), и на iPhone длинный ответ мог закончиться закрытием страницы. */
+let phonMod = null, phonOut = null;
+async function phonModule() {
+  if (phonMod) return phonMod;
   const a = await phonAssets();
-  return new Promise((resolve, reject) => {
-    let done = false;
-    const timer = setTimeout(() => { if (!done) { done = true; reject(new Error("phonemize timeout")); } }, 20000);
-    a.create({
-      print: line => { if (done) return; try { const j = JSON.parse(line); if (j.phoneme_ids) { done = true; clearTimeout(timer); resolve(j.phoneme_ids); } } catch {} },
-      printErr: () => {},
-      wasmBinary: a.wasm,
-      getPreloadedPackage: () => a.data,
-      locateFile: f => LIB + (f.endsWith(".wasm") ? "piper_phonemize.wasm" : f.endsWith(".data") ? "piper_phonemize.data" : f),
-    }).then(mod => {
-      try { mod.callMain(["-l", voice, "--input", JSON.stringify([{ text }]), "--espeak_data", "/espeak-ng-data"]); }
-      catch (e) { if (!done) { done = true; clearTimeout(timer); reject(e); } }   // сразу, а не через 20 с
-    }, e => { if (!done) { done = true; clearTimeout(timer); reject(e); } });
+  phonMod = await a.create({
+    print: line => { if (phonOut) phonOut(line); },
+    printErr: () => {},
+    wasmBinary: a.wasm,
+    getPreloadedPackage: () => a.data,
+    locateFile: f => LIB + (f.endsWith(".wasm") ? "piper_phonemize.wasm" : f.endsWith(".data") ? "piper_phonemize.data" : f),
   });
+  return phonMod;
+}
+async function phonemize(text, voice) {
+  const mod = await phonModule();
+  let ids = null;
+  phonOut = line => { if (ids) return; try { const j = JSON.parse(line); if (j.phoneme_ids) ids = j.phoneme_ids; } catch {} };
+  try { mod.callMain(["-l", voice, "--input", JSON.stringify([{ text }]), "--espeak_data", "/espeak-ng-data"]); }
+  catch (e) { phonMod = null; throw e; }   // сломался — в следующий раз создадим заново
+  finally { phonOut = null; }
+  if (!ids) { phonMod = null; throw new Error("phonemize: no output"); }
+  return ids;
 }
 let sess = null, sessId = "", cfg = null, loading = null;
 /* Подготовить голос (загрузить модель в память). Повторный вызов — мгновенно. */
