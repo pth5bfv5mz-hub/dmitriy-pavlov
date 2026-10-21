@@ -181,6 +181,7 @@ async function gStream(model, body, onText, signal) {
   return { text, sources, model };
 }
 let searchOffUntil = 0;   // кончился отдельный бесплатный лимит поиска Google — отвечаем без поиска
+let thinkOff = true;      // отключать «раздумья» 2.5-flash ради скорости (если модель это поддерживает)
 // Поиск Google у бесплатного ключа — крошечная отдельная квота (~500/день, только на 2.5-flash).
 // Поэтому включаем его ТОЛЬКО когда вопрос явно про свежее/внешнее, а не на каждый «привет».
 const FRESH_RE = /новост|сейчас|сегодня|завтра|вчера|текущ|погод|курс|котировк|цен[аыу]|сколько стоит|стоит ли|прогноз|расписан|когда (выйд|будет|состо|начн|откро)|последн|актуальн|свеж|нынешн|202[4-9]|203\d|кто (сейчас|выиграл|победил|президент|глава)|результат|счёт матч|кто такой|что такое|where|погугли|найди|поищи|в интернете|ссылк|http/i;
@@ -194,9 +195,13 @@ async function chatGemini({ system, hist, img, onText, signal, deep, wantSearch 
   for (const model of await gModels(deep ? "deep" : "chat")) {
     for (let ti = 0; ti < toolSets.length; ti++) {
       const tools = toolSets[ti];
-      try { const r = await gStream(model, tools ? { ...base, tools } : base, onText, signal); r.noSearch = !tools; return r; }
+      // Быстрый ответ: у 2.5-flash отключаем «раздумья» перед ответом (кроме режима «Глубже») — это секунды экономии
+      const think = !deep && thinkOff && /^gemini-2\.5-flash/.test(model);
+      const body = { ...base, generationConfig: { ...base.generationConfig, ...(think ? { thinkingConfig: { thinkingBudget: 0 } } : {}) }, ...(tools ? { tools } : {}) };
+      try { const r = await gStream(model, body, onText, signal); r.noSearch = !tools; return r; }
       catch (e) {
         last = e;
+        if (think && e.status === 400 && /thinking/i.test(e.message || "")) { thinkOff = false; ti--; continue; }   // модель не знает этот параметр — повтор без него
         // Любой сбой с инструментами поиска — не мучаем квоту поиска, отвечаем без него
         if (tools && (e.status === 429 || e.status === 400 || e.status >= 500)) { if (e.status === 429) searchOffUntil = Date.now() + 36e5; continue; }
         break;   // без инструментов — это уже проблема самой модели
@@ -260,7 +265,7 @@ async function transcribeGemini(b64, mime) {
           method: "POST", headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ contents: [{ role: "user", parts: [
             { text: "Распознай речь на записи дословно. Язык обычно русский. Верни только распознанный текст без кавычек и пояснений. Если речи нет — верни пустую строку." },
-            { inline_data: { mime_type: m, data: b64 } }] }], generationConfig: { temperature: 0 } }),
+            { inline_data: { mime_type: m, data: b64 } }] }], generationConfig: { temperature: 0, ...(/^gemini-2\.5-flash/.test(model) ? { thinkingConfig: { thinkingBudget: 0 } } : {}) } }),
         });
         if (!res.ok) await httpError(res, "gemini");
         const j = await res.json();

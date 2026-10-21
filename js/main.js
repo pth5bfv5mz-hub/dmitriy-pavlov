@@ -7,7 +7,7 @@ import { relevantFacts, activeFacts, applyActions, stripActions, extractActions,
 import { addDoc, removeDoc, search, fromUrl, fromFile, ensureDocVecs, docsForPrompt } from "./knowledge.js";
 import * as V from "./voice.js";
 
-const VERSION = "3.3.0";
+const VERSION = "3.4.0";
 let mode = "auto", deep = false, photo = null, busy = null;
 
 /* =================== Часы и статус =================== */
@@ -321,7 +321,10 @@ $("#mic").onclick = async () => {
   try {
     const text = await V.listen({ onInterim: t => { $("#input").value = t; autosize(); }, onTranscribing: () => status("Распознаю…", "busy") });
     $("#mic").classList.remove("live"); idleStatus();
-    if (text) send(text); else showHint("Не расслышал. Нажми 🎤 и скажи ещё раз.");
+    if (!text) { showHint("Не расслышал. Нажми 🎤 и скажи ещё раз."); return; }
+    // Сказал голосом — отвечаю голосом, коротко, как в живой беседе (текст тоже остаётся на экране)
+    $("#input").value = ""; autosize();
+    send(text, { voice: true }).catch(e => { V.speak(e.spoken || explain(e), { force: true }); });
   } catch (e) { $("#mic").classList.remove("live"); idleStatus(); showHint(voiceErr(e)); }
 };
 
@@ -336,6 +339,7 @@ function orbLevel(v) { $("#orbRing").style.transform = `scale(${1 + v * 0.45})`;
 $("#talk").onclick = () => { V.unlock(); openTalk(); };
 function openTalk() {
   if (!anyBrain()) { toast("Сначала подключи мозг в «Настройках»."); return; }
+  V.stopSpeaking(); if (busy) busy.abort();      // старый ответ не должен звучать в микрофон
   talkOn = true; $("#talkView").hidden = false; $("#talkText").textContent = "";
   $("#talkBrain").textContent = (order()[0] ? BRAINS[order()[0]].name : "") + (V.liveAvailable() ? " · живой голос" : " · голос iPhone");
   talkLoop();

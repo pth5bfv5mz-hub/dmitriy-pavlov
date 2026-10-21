@@ -5,6 +5,11 @@ import { S } from "./store.js";
 import { transcribe, canTranscribe, ttsGemini, canTTS } from "./brains.js";
 
 /* ---------- Звук ---------- */
+/* iOS после записи с микрофона переключает звук в «разговорный» режим (динамик у уха) —
+   ответ звучит очень тихо или не слышен. Явно говорим системе, что сейчас: запись или воспроизведение. */
+export function audioSession(type) {
+  try { if (navigator.audioSession && navigator.audioSession.type !== type) navigator.audioSession.type = type; } catch {}
+}
 let actx = null;
 export function audioCtx() {
   if (!actx) { const C = window.AudioContext || window.webkitAudioContext; if (C) actx = new C(); }
@@ -44,10 +49,12 @@ export function record({ onLevel, onSpeech, maxMs = 60000, silenceMs = 1300, noS
     // Пока iPhone спрашивает разрешение на микрофон, запись уже можно отменить
     const pending = { cancelled: false, stop: () => { pending.cancelled = true; } };
     current = pending;
+    stopSpeaking();                 // никогда не записываем собственный голос Дмитрия
+    audioSession("play-and-record");
     let stream;
     try { stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } }); }
-    catch (e) { if (current === pending) current = null; return reject(Object.assign(new Error(e && e.name === "NotAllowedError" ? "mic-denied" : "mic-failed"), { cause: e })); }
-    if (pending.cancelled || current !== pending) { stream.getTracks().forEach(t => t.stop()); return resolve(null); }
+    catch (e) { if (current === pending) current = null; audioSession("playback"); return reject(Object.assign(new Error(e && e.name === "NotAllowedError" ? "mic-denied" : "mic-failed"), { cause: e })); }
+    if (pending.cancelled || current !== pending) { stream.getTracks().forEach(t => t.stop()); audioSession("playback"); return resolve(null); }
     const mime = MIME.find(m => { try { return MediaRecorder.isTypeSupported(m); } catch { return false; } }) || "";
     let mr; try { mr = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined); } catch (e) { stream.getTracks().forEach(t => t.stop()); return reject(e); }
     const chunks = []; let cancelled = false, spoke = false, done = false;
@@ -56,6 +63,7 @@ export function record({ onLevel, onSpeech, maxMs = 60000, silenceMs = 1300, noS
     const cleanup = () => {
       try { src && src.disconnect(); } catch {}
       stream.getTracks().forEach(t => t.stop());   // отпускаем микрофон, иначе iOS делает звук тише
+      audioSession("playback");                    // и возвращаем звук на громкий динамик
       if (current === rec) current = null;
       if (cancelled || !chunks.length) return resolve(null);
       resolve(new Blob(chunks, { type: (mr.mimeType || mime || "audio/mp4").split(";")[0] }));
@@ -153,6 +161,7 @@ export const liveAvailable = () => S.voiceMode === "live" && canTTS() && Date.no
 export async function speak(text, { force, full } = {}) {
   if ((!S.speakOn && !force) || !text) return;
   stopSpeaking();
+  if (!current) audioSession("playback");
   const my = ++token;
   const t = speakable(text, full);
   if (liveAvailable()) {
@@ -180,6 +189,7 @@ export async function speak(text, { force, full } = {}) {
    Звук для следующей фразы запрашивается заранее, пока звучит текущая. */
 export function createSpeaker({ limit = 0 } = {}) {
   stopSpeaking();
+  if (!current) audioSession("playback");
   const my = ++token;
   const segs = []; let closed = false, wake = null, total = 0, cut = false, live = liveAvailable();
   const notify = () => { if (wake) { const w = wake; wake = null; w(); } };
