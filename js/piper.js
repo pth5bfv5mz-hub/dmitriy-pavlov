@@ -1,7 +1,7 @@
 /* Голос Дмитрия на телефоне: нейросеть Piper (проект rhasspy/piper).
    Бесплатно и без лимитов: синтез идёт прямо на устройстве, интернет не нужен после загрузки.
    Движок (ONNX Runtime + espeak-ng) лежит в приложении, модель голоса (~60 МБ) скачивается один раз
-   с Hugging Face и хранится в кэше телефона. */
+   с нашего сайта (запасные источники — Hugging Face) и хранится в кэше телефона. */
 const LIB = new URL("../lib/piper/", import.meta.url).href;
 // Откуда качать голос: сначала с нашего сайта на GitHub (открывается из России без VPN),
 // потом — Hugging Face и зеркала.
@@ -12,10 +12,11 @@ const SOURCES = [
   path => "https://huggingface.co/diffusionstudio/piper-voices/resolve/main/" + path,
   path => "https://hf-mirror.com/rhasspy/piper-voices/resolve/main/" + path,
 ];
+// Порядок — от самого низкого и спокойного. Тон проверен на реальном синтезе: Руслан ~116 Гц, Денис ~148 Гц, Дмитрий ~181 Гц.
 export const VOICES = {
-  "ru_RU-dmitri-medium": { name: "Дмитрий", note: "мужской", path: "ru/ru_RU/dmitri/medium/ru_RU-dmitri-medium.onnx" },
-  "ru_RU-denis-medium": { name: "Денис", note: "мужской", path: "ru/ru_RU/denis/medium/ru_RU-denis-medium.onnx" },
-  "ru_RU-ruslan-medium": { name: "Руслан", note: "мужской", path: "ru/ru_RU/ruslan/medium/ru_RU-ruslan-medium.onnx" },
+  "ru_RU-ruslan-medium": { name: "Руслан", note: "мужской, низкий и спокойный (рекомендую)", path: "ru/ru_RU/ruslan/medium/ru_RU-ruslan-medium.onnx" },
+  "ru_RU-denis-medium": { name: "Денис", note: "мужской, средний", path: "ru/ru_RU/denis/medium/ru_RU-denis-medium.onnx" },
+  "ru_RU-dmitri-medium": { name: "Дмитрий", note: "мужской, повыше", path: "ru/ru_RU/dmitri/medium/ru_RU-dmitri-medium.onnx" },
   "ru_RU-irina-medium": { name: "Ирина", note: "женский", path: "ru/ru_RU/irina/medium/ru_RU-irina-medium.onnx" },
 };
 const CACHE = "dp-voice-v1";

@@ -189,7 +189,11 @@ async function chatGemini({ system, hist, img, onText, signal, deep, wantSearch 
   const base = { system_instruction: { parts: [{ text: system }] }, contents: gContents(hist, img), generationConfig: { temperature: deep ? 0.4 : 0.6 } };
   let last; const tried = []; let rateHits = 0;
   const lastUser = [...hist].reverse().find(h => h.role === "user");
-  const needSearch = !img && Date.now() > searchOffUntil && (wantSearch || FRESH_RE.test(lastUser ? lastUser.text : ""));
+  const wantNet = !img && (wantSearch || FRESH_RE.test(lastUser ? lastUser.text : ""));
+  const needSearch = wantNet && Date.now() > searchOffUntil;
+  // Лимит поиска Google кончился — не отвечаем вслепую: подкладываем найденное запасным поиском (Tavily/Википедия, ссылки, погода)
+  let extra = null;
+  const backup = async () => { if (!extra) extra = netContext(lastUser ? lastUser.text : "").catch(() => ({ text: "", sources: [] })); return extra; };
   // При любом отказе с поиском сразу отвечаем той же моделью без поиска, а не долбим квоту.
   const toolSets = needSearch ? [[{ google_search: {} }, { url_context: {} }], undefined] : [undefined];
   for (const model of await gModels(deep ? "deep" : "chat")) {
@@ -197,8 +201,14 @@ async function chatGemini({ system, hist, img, onText, signal, deep, wantSearch 
       const tools = toolSets[ti];
       // Быстрый ответ: у 2.5-flash отключаем «раздумья» перед ответом (кроме режима «Глубже») — это секунды экономии
       const think = !deep && thinkOff && /^gemini-2\.5-flash/.test(model);
-      const body = { ...base, generationConfig: { ...base.generationConfig, ...(think ? { thinkingConfig: { thinkingBudget: 0 } } : {}) }, ...(tools ? { tools } : {}) };
-      try { const r = await gStream(model, body, onText, signal); r.noSearch = !tools; return r; }
+      const net = !tools && wantNet ? await backup() : null;
+      const sys = net && net.text ? { system_instruction: { parts: [{ text: system + "\n\nНАЙДЕНО В ИНТЕРНЕТЕ (запасной поиск, опирайся на это и называй источник):\n" + net.text }] } } : {};
+      const body = { ...base, ...sys, generationConfig: { ...base.generationConfig, ...(think ? { thinkingConfig: { thinkingBudget: 0 } } : {}) }, ...(tools ? { tools } : {}) };
+      try {
+        const r = await gStream(model, body, onText, signal); r.noSearch = !tools; r.netTried = !!net;
+        if (net && net.text) { r.sources = [...(r.sources || []), ...net.sources]; r.noSearch = false; }
+        return r;
+      }
       catch (e) {
         last = e;
         if (think && e.status === 400 && /thinking/i.test(e.message || "")) { thinkOff = false; ti--; continue; }   // модель не знает этот параметр — повтор без него
@@ -334,6 +344,20 @@ async function toolWebSearch(q, sources) {
     } catch {}
   }
   return out.length ? { note: S.tavilyKey ? "" : "Поиск только по Википедии (для полного поиска нужен ключ Tavily в настройках). Свежих новостей и цен здесь нет.", results: out } : "Ничего не найдено.";
+}
+/* Запасной доступ в интернет без Google: ссылки из вопроса читаем, погоду берём с Open-Meteo, остальное — поиск. */
+const WEATHER_RE = /погод[аеуы]?\s+(?:в|во)\s+([А-ЯЁA-Z][\p{L}-]+(?:[ -][А-ЯЁA-Z][\p{L}-]+)?)/u;
+async function netContext(q) {
+  const sources = []; const parts = [];
+  const urls = (q.match(/https?:\/\/\S+/g) || []).slice(0, 2);
+  for (const u of urls) { try { parts.push(`Страница ${u}:\n` + (await readUrl(u)).slice(0, 6000)); sources.push({ url: u, title: "" }); } catch {} }
+  const w = q.match(WEATHER_RE);
+  if (w) { try { const r = await toolWeather(w[1]); if (typeof r === "object") parts.push("Погода: " + JSON.stringify(r)); } catch {} }
+  if (!urls.length && !w) {
+    const r = await toolWebSearch(q.replace(/[?!.]+$/, "").slice(0, 200), sources);
+    if (typeof r === "object") parts.push(JSON.stringify(r).slice(0, 7000));
+  }
+  return { text: parts.join("\n\n"), sources };
 }
 export async function readUrl(url) {
   const r = await fetch("https://r.jina.ai/" + url, { headers: { "Accept": "text/plain" } });

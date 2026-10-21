@@ -2,12 +2,14 @@
 import { $, $$, uid, esc, md, plural, fmtDue, fmtAgo, isoLocal, hm, dayStart, todayKey, parseLocal, nextDue, pad, REPEAT_TXT, DAYS, MONTHS } from "./util.js";
 import { S, D, saveSettings, persist, exportAll, importAll, idbAll, setQuotaHandler } from "./store.js";
 import { chat, plain, order, anyBrain, configured, BRAINS, explain, discoverGemini, ping, canTranscribe, canTTS, isBlocked, ttsGemini } from "./brains.js";
+// Признаки «не знаю свежего» в ответе модели без поиска
+const NOKNOW_RE = /(нет|не имею) (доступа|возможности)[^.]{0,30}(интернет|актуальн|свеж|реальн|текущ)|не могу (проверить|знать|посмотреть|найти)[^.]{0,25}(интернет|актуальн|текущ|сейчас|сегодня)|на момент (моего )?(обучения|последнего обновления)|(у меня )?нет (актуальн|свеж)[а-я]* (данных|информации|сведений)|не располагаю (актуальн|свеж)|мои (данные|знания) (ограничены|заканчиваются)|рекомендую (проверить|уточнить) на (официальн|сайт)/i;
 import { buildPrompt, MODES } from "./prompt.js";
 import { relevantFacts, activeFacts, applyActions, stripActions, extractActions, contextStart, updateDiary, reflect, tidyMemory, lessonFromFeedback, ensureFactVecs, dueCards, gradeCard, CATS } from "./memory.js";
 import { addDoc, removeDoc, search, fromUrl, fromFile, ensureDocVecs, docsForPrompt } from "./knowledge.js";
 import * as V from "./voice.js";
 
-const VERSION = "3.5.1";
+const VERSION = "3.6.0";
 let mode = "auto", deep = false, photo = null, busy = null;
 
 /* =================== Часы и статус =================== */
@@ -191,7 +193,8 @@ async function send(text, opts = {}) {
   body.innerHTML = `<span class="thinking">${img ? "Смотрю на фото…" : deep ? "Думаю глубоко…" : "Думаю…"}</span>`;
   const ctl = new AbortController(); busy = ctl; idleStatus(); syncSendBtn();
   // Речь начинается с первой готовой фразы, пока ответ ещё пишется.
-  const speaker = opts.voice || S.speakOn ? V.createSpeaker({ limit: opts.voice ? 1200 : 600 }) : null;
+  const newSpeaker = () => opts.voice || S.speakOn ? V.createSpeaker({ limit: opts.voice ? 1200 : 600 }) : null;
+  let speaker = newSpeaker();
   let spokenTo = 0;
   const feed = (v, final) => {
     if (!speaker) return;
@@ -209,7 +212,14 @@ async function send(text, opts = {}) {
     const hist = D.msgs.slice(contextStart(D.msgs)).map(m => ({ role: m.role === "user" ? "user" : "assistant", text: (m.photo && m.role === "user" ? "[прислал фото] " : "") + m.text }));
     // В исследовательских режимах разрешаем поиск Google даже без явных слов-маркеров
     const wantSearch = ["scientist", "analyst", "security"].includes(mode) || deep;
-    const res = await chat({ system, hist, img, onText, signal: ctl.signal, deep, wantSearch });
+    let res = await chat({ system, hist, img, onText, signal: ctl.signal, deep, wantSearch });
+    // Ответил без поиска и признался, что не знает свежего, — сам ищу в интернете и отвечаю заново
+    if (res.brain === "gemini" && res.noSearch && !res.netTried && !img && NOKNOW_RE.test(stripActions(res.text))) {
+      if (speaker) { speaker.cancel(); speaker = newSpeaker(); spokenTo = 0; }
+      body.innerHTML = `<span class="thinking">Ищу в интернете…</span>`;
+      try { res = await chat({ system, hist, img, onText, signal: ctl.signal, deep, wantSearch: true }); }
+      catch (e2) { if (e2.name === "AbortError") throw e2; }   // не вышло — оставим первый ответ
+    }
     const visible = stripActions(res.text) || "Готово.";
     body.innerHTML = md(visible);
     feed(visible, true);
@@ -337,13 +347,16 @@ function talkSet(phase, text) {
 }
 function orbLevel(v) { $("#orbRing").style.transform = `scale(${1 + v * 0.45})`; }
 $("#talk").onclick = () => { V.unlock(); openTalk(); };
-function openTalk() {
+function openTalk({ waitTap = false } = {}) {
   if (!anyBrain()) { toast("Сначала подключи мозг в «Настройках»."); return; }
   V.stopSpeaking(); if (busy) busy.abort();      // старый ответ не должен звучать в микрофон
   talkOn = true; $("#talkView").hidden = false; $("#talkText").textContent = "";
   $("#talkBrain").textContent = (order()[0] ? BRAINS[order()[0]].name : "") + " · " + V.engineName();
+  // При открытии приложения iPhone не даёт включить звук и микрофон без касания — ждём одно нажатие на круг
+  if (waitTap) { talkGreet = true; talkSet("idle", "Нажми на круг и говори"); return; }
   talkLoop();
 }
+let talkGreet = false;   // поздороваться первым при начале разговора
 function closeTalk() {
   talkOn = false; talkGen++; $("#talkView").hidden = true;
   V.stopRecording(true); V.stopSpeaking(); if (busy) busy.abort(); idleStatus();
@@ -356,10 +369,25 @@ $("#orb").onclick = () => {
   if (talkPhase === "thinking" && busy) { busy.abort(); return; }
   if (talkPhase === "idle" && talkOn) talkLoop();
 };
+/* Приветствие голосом — Дмитрий начинает разговор первым, как живой собеседник. */
+function spokenGreeting() {
+  const h = new Date().getHours();
+  const g = h < 5 ? "Доброй ночи" : h < 12 ? "Доброе утро" : h < 18 ? "Добрый день" : "Добрый вечер";
+  const now = Date.now(), end = dayStart(new Date()) + 864e5;
+  const today = D.tasks.filter(t => !t.done && t.due && t.due >= now && t.due < end).sort((a, b) => a.due - b.due);
+  const tail = today.length ? ` Сегодня у тебя: ${today.slice(0, 2).map(t => t.text + " в " + hm(new Date(t.due))).join(", ")}.` : "";
+  return `${g}, Сумрак.${tail} Слушаю тебя.`;
+}
 async function talkLoop() {
   const gen = ++talkGen;                      // только один цикл разговора одновременно
   const alive = () => talkOn && gen === talkGen;
   let empties = 0;
+  if (talkGreet) {
+    talkGreet = false;
+    talkSet("speaking"); const gr = spokenGreeting(); $("#talkText").textContent = gr;
+    await V.speak(gr, { force: true });
+    if (!alive()) return;
+  }
   while (alive()) {
     talkSet("listening"); orbLevel(0);
     let text = "";
@@ -561,7 +589,7 @@ $("#teachForm").addEventListener("submit", async e => {
 /* =================== Настройки =================== */
 const TEXT_KEYS = ["geminiKey", "mistralKey", "zaiKey", "claudeKey", "claudeModel", "customBase", "customKey", "customModel", "tavilyKey"];
 const SELECT_KEYS = ["brain", "geminiModel", "mistralModel", "voiceMode", "piperVoice", "liveVoice", "iosVoice", "sttMode"];
-const CHECK_KEYS = ["speakOn", "handsFree", "briefing", "autoReminders"];
+const CHECK_KEYS = ["speakOn", "handsFree", "briefing", "autoReminders", "talkOnOpen"];
 function fillGeminiModels() {
   const m = D.meta.models; const sel = $("#geminiModel");
   const ids = m ? [...new Set([...(m.chat || []), ...(m.deep || []), ...(m.lite || [])])] : [];
@@ -619,7 +647,7 @@ async function getLocalVoice(btn, out) {
     V.unlock(); V.speak("Сумрак, теперь я говорю вот так. Спокойно и по-человечески.", { force: true }).finally(syncSendBtn);
     return true;
   } catch (e) {
-    show("Не получилось скачать голос: " + (e.message || e) + ". Проверь интернет (может понадобиться VPN) и попробуй ещё раз.");
+    show("Не получилось скачать голос: " + (e.message || e) + ". Проверь интернет и попробуй ещё раз (VPN не нужен — голос лежит на нашем сайте).");
     return false;
   } finally { localBusy = false; btn.disabled = false; }
 }
@@ -713,14 +741,18 @@ $("#ver").textContent = "версия " + VERSION;
 setQuotaHandler(ok => toast(ok ? "Память телефона почти заполнена — я сократил старую переписку. Сделай резервную копию." : "Память телефона переполнена — последние изменения могли не сохраниться. Сделай копию и удали лишние материалы."));
 tickClock(); setInterval(tickClock, 1000);
 renderModes(); fillSettings(); fillGeminiModels(); fillVoices(); renderLists(); renderChat(); setTab("chat");
+if (S.talkOnOpen && anyBrain()) openTalk({ waitTap: true });
 updateLocal().then(() => {
-  // Нормальный мужской голос ещё не скачан — предложим один раз в несколько дней
-  if (S.voiceMode !== "local" || V.localAvailable() || !anyBrain() || Date.now() - (D.meta.voiceOffer || 0) < 3 * 864e5) return;
+  // Нормальный мужской голос ещё не скачан — предложим один раз в несколько дней (после смены голоса — сразу)
+  const switched = S.voiceSwitched; if (switched) { S.voiceSwitched = false; saveSettings(); }
+  if (S.voiceMode !== "local" || V.localAvailable() || !anyBrain() || (!switched && Date.now() - (D.meta.voiceOffer || 0) < 3 * 864e5)) return;
   D.meta.voiceOffer = Date.now(); persist();
-  const el = addMsg("ai", "Сумрак, хочешь, чтобы я говорил нормальным мужским голосом, а не роботом? Скачай голос один раз (около 90 МБ, лучше по Wi-Fi) — дальше он работает прямо на телефоне, бесплатно и без лимитов.");
+  const el = addMsg("ai", switched
+    ? "Сумрак, я сменил себе голос на более низкий и спокойный — «Руслан». Скачай его один раз (около 60 МБ, лучше по Wi-Fi, VPN не нужен). Прежний голос можно вернуть в настройках."
+    : "Сумрак, хочешь, чтобы я говорил нормальным мужским голосом, а не роботом? Скачай голос один раз (около 90 МБ, лучше по Wi-Fi, VPN не нужен) — дальше он работает прямо на телефоне, бесплатно и без лимитов.");
   const box = document.createElement("div"); box.className = "acts";
   const out = document.createElement("div"); out.className = "small";
-  box.append(pill("⬇️ Скачать голос Дмитрия", e => { V.unlock(); getLocalVoice(e.target, out); }));
+  box.append(pill("⬇️ Скачать голос", e => { V.unlock(); getLocalVoice(e.target, out); }));
   el.append(box, out);
 });
 try { speechSynthesis.onvoiceschanged = fillVoices; } catch {}
