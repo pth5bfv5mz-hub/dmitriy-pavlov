@@ -37,14 +37,15 @@ async function httpError(res, brain) {
 export const isLocationErr = e => /location is not supported|User location|unsupported_country|not available in your (country|region)/i.test(String(e && e.message));
 const isKeyErr = e => e && (e.status === 401 || /API key not valid|API_KEY_INVALID|invalid api key|Unauthorized/i.test(e.message || ""));
 export function explain(e) {
-  const m = String(e && e.message || ""), s = e && e.status, who = e && e.brain ? BRAINS[e.brain]?.name || e.brain : "Нейросеть";
+  const m = String(e && e.message || ""), s = e && e.status, b = e && e.brain, who = b ? BRAINS[b]?.name || b : "Нейросеть";
+  const other = b === "gemini" ? "без VPN поможет Mistral или Z.ai" : "с VPN поможет Gemini";
   if (e && e.name === "AbortError") return "Остановлено.";
-  if (isLocationErr(e)) return "Gemini не пускает из России. Включи VPN (США или Европа) — или подключи Mistral во вкладке «Настройки», он работает без VPN.";
+  if (isLocationErr(e)) return "Gemini не пускает из России. Включи VPN (США или Европа) — или подключи Mistral/Z.ai во вкладке «Настройки», они работают без VPN.";
   if (isKeyErr(e)) return `${who}: ключ не подходит. Проверь его во вкладке «Настройки».`;
   if (s === 403) return `${who}: доступ запрещён. ${m.slice(0, 140)}`;
-  if (s === 429 && /limit:\s*0\b/i.test(m)) return `${who}: бесплатному ключу Google не даёт доступ к доступным моделям (лимит 0). Подключи запасной мозг (Mistral) в «Настройках» — или пришли мне подробности ниже.`;
-  if (s === 429 && /per.?day|daily|PerDay/i.test(m)) return `${who}: дневной бесплатный лимит исчерпан у всех моделей. Он обновится завтра. Пока может отвечать запасной мозг (Mistral) — подключи его в «Настройках».`;
-  if (s === 429) return `${who}: Google просит подождать (лимит запросов в минуту). Повтори через минуту. Я уже перепробовал все доступные модели.`;
+  if (s === 429 && /limit:\s*0\b/i.test(m)) return `${who}: бесплатному ключу не положены доступные модели (лимит 0). Подключи другой мозг (${other}) в «Настройках» — или открой «Подробности» ниже и пришли мне.`;
+  if (s === 429 && /per.?day|daily|PerDay/i.test(m)) return `${who}: дневной бесплатный лимит исчерпан. Обновится завтра. Подключи другой мозг (${other}) в «Настройках».`;
+  if (s === 429) return `${who}: просит подождать (лимит запросов в минуту). Повтори через минуту, или подключи другой мозг (${other}) в «Настройках».`;
   if (s >= 500) return `${who} сейчас перегружен. Повтори через минуту.`;
   if (e && e.name === "TypeError") return "Нет связи с нейросетью. Проверь интернет. Для Gemini нужен включённый VPN.";
   return `${who}: не получилось. ${m.slice(0, 200)}`;
@@ -168,25 +169,31 @@ async function gStream(model, body, onText, signal) {
   if (!text) throw new BrainError("Пустой ответ", 503, "gemini");
   return { text, sources, model };
 }
-let searchOffUntil = 0;   // кончился бесплатный лимит поиска Google — отвечаем без поиска
+let searchOffUntil = 0;   // кончился отдельный бесплатный лимит поиска Google — отвечаем без поиска
 async function chatGemini({ system, hist, img, onText, signal, deep }) {
   const base = { system_instruction: { parts: [{ text: system }] }, contents: gContents(hist, img), generationConfig: { temperature: deep ? 0.4 : 0.6 } };
-  let last; const tried = [];
-  const toolSets = () => Date.now() < searchOffUntil ? [undefined] : [[{ google_search: {} }, { url_context: {} }], [{ google_search: {} }], undefined];
+  let last; const tried = []; let rateHits = 0;
+  // Поиск Google — отдельная, очень маленькая бесплатная квота. Поэтому: сначала пробуем с поиском,
+  // но при ЛЮБОМ отказе с поиском сразу переходим на ответ без поиска той же моделью, а не долбим квоту.
+  const withSearch = Date.now() > searchOffUntil;
+  const toolSets = withSearch ? [[{ google_search: {} }, { url_context: {} }], undefined] : [undefined];
   for (const model of await gModels(deep ? "deep" : "chat")) {
-    for (const tools of toolSets()) {
+    for (let ti = 0; ti < toolSets.length; ti++) {
+      const tools = toolSets[ti];
       try { const r = await gStream(model, tools ? { ...base, tools } : base, onText, signal); r.noSearch = !tools; return r; }
       catch (e) {
         last = e;
-        if (e.status === 400 && /tool|url_context|search|grounding/i.test(e.message || "")) continue;
-        if (e.status === 429 && tools && /search|grounding/i.test(e.message || "")) { searchOffUntil = Date.now() + 36e5; continue; }
-        break;
+        // Любой сбой с инструментами поиска — не мучаем квоту поиска, отвечаем без него
+        if (tools && (e.status === 429 || e.status === 400 || e.status >= 500)) { if (e.status === 429) searchOffUntil = Date.now() + 36e5; continue; }
+        break;   // без инструментов — это уже проблема самой модели
       }
     }
     tried.push(`${model}: ${last.status || ""} ${String(last.message || "").slice(0, 160)}`);
     markDead(model, last);
-    if (isLocationErr(last)) blockedUntil.gemini = Date.now() + 5 * 6e4;
+    if (isLocationErr(last)) { blockedUntil.gemini = Date.now() + 5 * 6e4; throw last; }
     if (!gRetriable(last)) throw last;
+    // Лимит запросов в минуту: не перебираем все модели (это только усугубляет лимит) — пробуем ещё одну и стоп
+    if (last.status === 429 && !/limit:\s*0\b/i.test(last.message || "") && ++rateHits >= 2) break;
   }
   if (last) last.tried = tried;
   throw last;
