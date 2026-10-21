@@ -49,6 +49,7 @@ export const D = {
   diary: load("diary", { text: "", upTo: 0 }),
   skills: load("skills", []),     // {id, name, desc, trigger, steps, uses, ts}
   lessons: load("lessons", []),   // {id, text, ts}
+  mistakes: load("mistakes", []), // журнал недочётов: {id, what, why, fix, q, src, count, ts, last, status:'open'|'fixed'}
   insights: load("insights", []), // {id, text, ts}
   cards: load("cards", []),       // {id, q, a, topic, due, ivl, ease, reps, ts}
   docs: load("docs", []),         // {id, title, kind, ts, chunks, chars}
@@ -57,7 +58,7 @@ export const D = {
 // Старые факты без новых полей
 D.facts.forEach(f => { f.cat = f.cat || "другое"; f.imp = f.imp || 5; f.status = f.status || "active"; f.used = f.used || f.ts || Date.now(); });
 
-const KEYS = ["msgs", "facts", "core", "tasks", "notes", "diary", "skills", "lessons", "insights", "cards", "docs", "meta"];
+const KEYS = ["msgs", "facts", "core", "tasks", "notes", "diary", "skills", "lessons", "mistakes", "insights", "cards", "docs", "meta"];
 let onQuota = () => {};
 export const setQuotaHandler = f => { onQuota = f; };
 /* Сохранить всё. Если память телефона переполнена — ужимаем переписку и пробуем ещё раз. */

@@ -1,5 +1,5 @@
 /* Офлайн-оболочка: приложение открывается даже без сети; запросы к нейросетям идут мимо кэша. */
-const CACHE = "dp-v3.7.0";
+const CACHE = "dp-v3.8.0";
 const LIB_CACHE = "dp-lib-v1";   // тяжёлые библиотеки (голосовой движок, PDF) — не перекачиваем при обновлениях
 const KEEP = ["dp-voice-", "dp-lib-"]; // кэш скачанного голоса и библиотек обновление НЕ стирает
 const SHELL = ["./", "index.html", "style.css", "js/main.js", "js/util.js", "js/store.js", "js/brains.js", "js/memory.js", "js/knowledge.js", "js/prompt.js", "js/voice.js", "js/piper.js", "guide.html", "manifest.webmanifest", "icons/icon-192.png", "icons/icon-512.png", "icons/apple-touch-icon.png"];

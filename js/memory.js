@@ -120,6 +120,15 @@ export function applyActions(act, userText, { temp } = {}) {
   arr(act.notes).forEach(t => { t = String(typeof t === "string" ? t : t && t.text || "").trim(); if (real(t)) D.notes.push({ id: uid(), text: t, ts: now }); });
   const delN = arr(act.delete_notes).map(String); D.notes = D.notes.filter(n => !delN.includes(n.id));
   const taught = !temp && (TEACH_RE.test(userText || "") || CONFIRM_RE.test(userText || ""));
+  if (!temp) arr(act.mistakes).forEach(m => {
+    const r = m && addMistake({ what: typeof m === "string" ? m : m.what, why: m.why, fix: m.fix, q: userText, src: "сам заметил в разговоре" });
+    if (r) out.learned.push("свой недочёт");
+  });
+  // Уроки — всегда, когда модель их вывела (раньше терялись, если в поправке не было слов «научись», «запомни»…)
+  if (!temp) arr(act.lessons).forEach(l => {
+    const text = String(typeof l === "string" ? l : l && l.text || "").trim();
+    if (real(text) && !D.lessons.some(x => x.text === text || similar(x.text, text) >= 0.75)) { D.lessons.push({ id: uid(), text: text.slice(0, 400), ts: now }); D.lessons = D.lessons.slice(-60); out.learned.push("урок"); }
+  });
   if (taught) {
     arr(act.skills).forEach(s => {
       if (!s || !real(String(s.name || "")) || !real(String(s.steps || ""))) return;
@@ -127,10 +136,6 @@ export function applyActions(act, userText, { temp } = {}) {
       const rec = { name: String(s.name).slice(0, 80), desc: String(s.desc || "").slice(0, 300), trigger: String(s.trigger || "").slice(0, 200), steps: String(s.steps).slice(0, 4000) };
       if (ex) Object.assign(ex, rec, { ts: now }); else D.skills.push({ id: uid(), uses: 0, ts: now, ...rec });
       out.learned.push("навык «" + rec.name + "»");
-    });
-    arr(act.lessons).forEach(l => {
-      const text = String(typeof l === "string" ? l : l && l.text || "").trim();
-      if (real(text) && !D.lessons.some(x => x.text === text)) { D.lessons.push({ id: uid(), text: text.slice(0, 400), ts: now }); out.learned.push("урок"); }
     });
   }
   arr(act.forget_skills).map(String).forEach(id => { D.skills = D.skills.filter(s => s.id !== id); });
@@ -214,11 +219,76 @@ export async function tidyMemory() {
   embedFacts(fresh);
   return { ok: true, n: activeFacts().length };
 }
-/* Урок из оценки 👎 и пояснения Сумрака. */
+/* Урок и запись в журнал недочётов из оценки 👎 и пояснения Сумрака. */
 export async function lessonFromFeedback(question, answer, comment) {
-  const res = await plain("Ты помогаешь ассистенту Дмитрию Павлову учиться на ошибках. Отвечай только JSON.",
-    `Вопрос Сумрака: ${question}\nОтвет Дмитрия: ${answer.slice(0, 3000)}\nСумраку не понравилось${comment ? ": " + comment : ""}.\nСформулируй 1 короткое общее правило на будущее (что делать иначе), применимое к похожим случаям. Не пересказывай вопрос.\nВерни JSON: {"lesson":"..."}`, { json: true });
-  const j = parseJSON(res); const t = j && String(j.lesson || "").trim();
-  if (real(t)) { D.lessons.push({ id: uid(), text: t.slice(0, 400), ts: Date.now() }); D.lessons = D.lessons.slice(-60); persist(); }
-  return t;
+  const res = await plain("Ты помогаешь ассистенту Дмитрию Павлову честно разбирать свои ошибки. Отвечай только JSON.",
+    `Вопрос Сумрака: ${question}\nОтвет Дмитрия: ${answer.slice(0, 3000)}\nСумраку не понравилось${comment ? ": " + comment : ""}.\nРазбери: what — что конкретно Дмитрий сделал не так (одна фраза, от первого лица: «Я …»); why — почему так вышло; fix — короткое общее правило на будущее, применимое к похожим случаям (не пересказывай вопрос).\nВерни JSON: {"what":"...","why":"...","fix":"..."}`, { json: true });
+  const j = parseJSON(res) || {};
+  const fix = String(j.fix || j.lesson || "").trim();
+  const what = String(j.what || "").trim() || (comment ? "Ответил не так, как нужно: " + comment : "");
+  if (real(what)) addMistake({ what, why: j.why, fix, q: question, src: "твоя оценка 👎" });
+  else if (real(fix) && !D.lessons.some(l => similar(l.text, fix) >= 0.75)) { D.lessons.push({ id: uid(), text: fix.slice(0, 400), ts: Date.now() }); D.lessons = D.lessons.slice(-60); persist(); }
+  return fix;
+}
+
+/* =================== Самоанализ: журнал недочётов ===================
+   Записи появляются четырьмя путями: Дмитрий сам замечает ошибку в разговоре (поправка, недовольство),
+   оценка 👎, автоматические проверки ответа и ежедневная самопроверка переписки.
+   Похожие недочёты не дублируются — растёт счётчик повторов. Не повторялся 14 дней — «исправлен». */
+// Сходство двух формулировок по корням слов (первые 4 буквы: «рублях» и «рубли» — одно и то же)
+const roots = t => new Set(terms(t || "").map(w => w.slice(0, 4)));
+export function similar(a, b) {
+  const A = roots(a), B = roots(b);
+  if (!A.size || !B.size) return 0;
+  let n = 0; A.forEach(w => { if (B.has(w)) n++; });
+  return n / Math.min(A.size, B.size);
+}
+export function addMistake({ what, why = "", fix = "", q = "", src = "сам заметил" }) {
+  what = String(what || "").trim(); fix = String(fix || "").trim();
+  if (!real(what) || what.length < 8) return null;
+  const now = Date.now();
+  const ex = D.mistakes.find(m => similar(m.what, what) >= 0.5 || (real(fix) && m.fix && similar(m.fix, fix) >= 0.6 && similar(m.what, what) >= 0.3));
+  if (ex) {
+    ex.count = (ex.count || 1) + 1; ex.last = now; ex.status = "open";
+    if (real(fix)) ex.fix = fix.slice(0, 400); if (q) ex.q = String(q).slice(0, 200);
+  } else {
+    D.mistakes.push({ id: uid(), what: what.slice(0, 400), why: String(why || "").slice(0, 300), fix: fix.slice(0, 400), q: String(q || "").slice(0, 200), src, count: 1, ts: now, last: now, status: "open" });
+    D.mistakes = D.mistakes.slice(-80);
+  }
+  // Правило исправления — сразу в уроки, чтобы оно применялось в следующих ответах
+  if (real(fix) && !D.lessons.some(l => similar(l.text, fix) >= 0.75)) { D.lessons.push({ id: uid(), text: fix.slice(0, 400), ts: now }); D.lessons = D.lessons.slice(-60); }
+  persist();
+  return ex || D.mistakes[D.mistakes.length - 1];
+}
+export function openMistakes() {
+  const now = Date.now(); let ch = false;
+  D.mistakes.forEach(m => { if (m.status === "open" && now - (m.last || m.ts) > 14 * 864e5) { m.status = "fixed"; m.fixedAt = now; ch = true; } });
+  if (ch) persist();
+  return D.mistakes.filter(m => m.status === "open");
+}
+/* Автоматические проверки ответа — без нейросети, на каждом ответе. */
+const PROMISE_RE = /(напомню|поставил[аи]? напоминани|поставил[аи]? (тебе )?(дело|задачу)|записал[аи]? (это )?в дела|добавил[аи]? (это )?(в дела|напоминани))/i;
+const FALSE_CANT_RE = /(не могу|не умею|нет возможности) (сам(остоятельно)? )?(ставить|поставить|создавать|создать|устанавливать) (напоминани|будильник|дел)|нет доступа к интернету|не имею доступа к интернету|нет выхода в интернет/i;
+export function selfCheck(question, reply, out) {
+  const found = [];
+  if (PROMISE_RE.test(reply) && !out.newTasks.length && !/не напомню|могу напомнить|хочешь, напомню|напомню\?/i.test(reply))
+    found.push(addMistake({ what: "Я сказал, что поставил напоминание, но само дело не создал — напоминания бы не было.", why: "Пообещал словами, но не добавил дело в блок действий.", fix: "Обещая напомнить, всегда создавай дело (tasks) с точной датой и временем; без этого напоминания не будет.", q: question, src: "самопроверка ответа" }));
+  if (FALSE_CANT_RE.test(reply))
+    found.push(addMistake({ what: "Я сказал, что не могу ставить напоминания или выходить в интернет — это неправда, я это умею.", why: "Забыл о своих возможностях.", fix: "Помни свои возможности: я ставлю напоминания (дела с временем, плюс кнопки в Напоминания и Календарь iPhone) и ищу в интернете. Не говори, что не умеешь.", q: question, src: "самопроверка ответа" }));
+  return found.filter(Boolean);
+}
+/* Раз в день: перечитать недавнюю переписку и честно найти свои ошибки (один фоновый запрос). */
+export async function selfReview(force) {
+  const since = D.meta.lastSelfReview || 0;
+  const recent = D.msgs.filter(m => !m.temp && (m.ts || 0) > since).slice(-40);
+  const due = force || ((D.meta.lastSelfReviewDay || "") !== todayKey() && recent.filter(m => m.role === "user").length >= 6);
+  if (!due || recent.length < 2) return null;
+  const convo = recent.map(m => `${m.role === "user" ? "Сумрак" : "Дмитрий"}${m.rating === -1 ? " [Сумрак поставил 👎]" : m.rating === 1 ? " [👍]" : ""}: ${String(m.text || "").slice(0, 700)}`).join("\n");
+  const known = D.mistakes.slice(-15).map(m => "- " + m.what).join("\n") || "(пока нет)";
+  const res = await plain("Ты — строгий внутренний контролёр качества личного ассистента Дмитрия Павлова. Честно, без самобичевания и без выдумок. Отвечай только JSON.",
+    `Переписка Дмитрия с Сумраком:\n${convo}\n\nУже известные недочёты:\n${known}\n\nНайди реальные ошибки Дмитрия в этой переписке — только те, что прямо видны из текста: неверные факты или расчёты; не понял, что просил Сумрак (Сумрак переспрашивал, поправлял, раздражался); обещал и не сделал; сказал «не могу», хотя мог; лишняя вода или слишком коротко; повторялся; не напомнил о важном; не поддержал, когда было нужно. Не пиши общих слабостей ИИ. Если ошибок нет — верни пустой список.\nДля каждой: what — что я сделал не так (от первого лица, конкретно, с сутью случая), why — почему, fix — правило на будущее.\nВерни JSON: {"mistakes":[{"what":"...","why":"...","fix":"..."}]} (не больше 5)`, { json: true });
+  const j = parseJSON(res) || {};
+  const added = arr(j.mistakes).slice(0, 5).map(m => m && addMistake({ what: m.what, why: m.why, fix: m.fix, src: "ежедневная самопроверка" })).filter(Boolean);
+  D.meta.lastSelfReview = recent[recent.length - 1].ts || Date.now(); D.meta.lastSelfReviewDay = todayKey(); persist();
+  return added;
 }

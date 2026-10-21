@@ -5,11 +5,11 @@ import { chat, plain, order, anyBrain, configured, BRAINS, explain, discoverGemi
 // Признаки «не знаю свежего» в ответе модели без поиска
 const NOKNOW_RE = /(нет|не имею) (доступа|возможности)[^.]{0,30}(интернет|актуальн|свеж|реальн|текущ)|не могу (проверить|знать|посмотреть|найти)[^.]{0,25}(интернет|актуальн|текущ|сейчас|сегодня)|на момент (моего )?(обучения|последнего обновления)|(у меня )?нет (актуальн|свеж)[а-я]* (данных|информации|сведений)|не располагаю (актуальн|свеж)|мои (данные|знания) (ограничены|заканчиваются)|рекомендую (проверить|уточнить) на (официальн|сайт)/i;
 import { buildPrompt, MODES } from "./prompt.js";
-import { relevantFacts, activeFacts, applyActions, stripActions, extractActions, contextStart, updateDiary, reflect, tidyMemory, lessonFromFeedback, ensureFactVecs, dueCards, gradeCard, CATS } from "./memory.js";
+import { relevantFacts, activeFacts, applyActions, stripActions, extractActions, contextStart, updateDiary, reflect, tidyMemory, lessonFromFeedback, selfCheck, selfReview, openMistakes, ensureFactVecs, dueCards, gradeCard, CATS } from "./memory.js";
 import { addDoc, removeDoc, search, fromUrl, fromFile, ensureDocVecs, docsForPrompt } from "./knowledge.js";
 import * as V from "./voice.js";
 
-const VERSION = "3.7.0";
+const VERSION = "3.8.0";
 let mode = "auto", deep = false, photo = null, busy = null;
 
 /* =================== Часы и статус =================== */
@@ -227,6 +227,7 @@ async function send(text, opts = {}) {
     el.querySelector(".by").innerHTML = `Дмитрий Павлов <span>· ${esc(who)}</span>`;
     addSources(el, res.sources);
     const out = applyActions(extractActions(res.text), text, { temp });
+    if (!temp && selfCheck(text, visible, out).length) out.learned.push("свой недочёт");
     const msg = { role: "ai", text: visible, ts: Date.now(), sources: (res.sources || []).slice(0, 6), brain: res.brain, mode, temp };
     D.msgs.push(msg); persist();
     if (out.newTasks.some(t => t.due)) addTaskButtons(el, out.newTasks.filter(t => t.due));
@@ -285,6 +286,7 @@ async function background() {
   try {
     await updateDiary().catch(() => {});
     if (await reflect().catch(() => false)) renderMem();
+    if (await selfReview().catch(() => null)) renderKnow();
     if (activeFacts().length > 80 && Date.now() - (D.meta.lastTidy || 0) > 3 * 864e5) { await tidyMemory().catch(() => {}); renderMem(); }
     await ensureFactVecs(); await ensureDocVecs();
   } finally { bg = false; }
@@ -473,6 +475,12 @@ function nextCard() {
   el.append(box); scrollDown();
 }
 $("#reviewBtn").onclick = startReview;
+$("#selfReviewBtn").onclick = async e => {
+  const b = e.target; b.disabled = true; b.textContent = "Перечитываю переписку…";
+  try { const r = await selfReview(true); renderKnow(); toast(r && r.length ? "Нашёл недочётов: " + r.length + ". Они в списке ниже." : r ? "Новых ошибок в недавней переписке не нашёл." : "Пока мало переписки для разбора.", 3500); }
+  catch (err) { toast(explain(err)); }
+  finally { b.disabled = false; b.textContent = "Проверить себя сейчас"; }
+};
 
 /* =================== Напоминания =================== */
 const SHORTCUT = "ДП Напоминание";
@@ -540,6 +548,11 @@ function renderKnow() {
   $("#sstat").textContent = D.skills.length || "";
   $("#skills").innerHTML = D.skills.map(s => `<li class="row nocheck"><div class="tx"><details><summary><b>${esc(s.name)}</b> — ${esc(s.desc)}</summary><div class="small pre">${s.trigger ? "Когда: " + esc(s.trigger) + "\n" : ""}${esc(s.steps)}</div></details><span class="due">применён ${plural(s.uses || 0, "раз", "раза", "раз")}</span></div><button class="x" data-del="skills:${s.id}" aria-label="Удалить">×</button></li>`).join("");
   emptyAfter("#skills", D.skills.length, "Пока нет навыков.");
+  const open = openMistakes();
+  $("#mstat").textContent = open.length ? open.length + " открыто" : D.mistakes.length ? "всё исправлено" : "";
+  $("#mistakes").innerHTML = D.mistakes.slice().sort((a, b) => (a.status === "fixed") - (b.status === "fixed") || (b.last || b.ts) - (a.last || a.ts)).map(m =>
+    `<li class="row nocheck"><div class="tx">${m.status === "fixed" ? "✅ " : "⚠️ "}${esc(m.what)}${m.fix ? `<span class="due">Исправляю: ${esc(m.fix)}</span>` : ""}<span class="due">${esc(m.src || "")} · ${fmtAgo(m.last || m.ts)}${(m.count || 1) > 1 ? " · повторялось " + plural(m.count, "раз", "раза", "раз") : ""}${m.status === "fixed" ? " · не повторялось 2 недели" : ""}</span></div><button class="x" data-del="mistakes:${m.id}" aria-label="Удалить">×</button></li>`).join("");
+  emptyAfter("#mistakes", D.mistakes.length, "Пока ничего не записано. Я замечаю свои ошибки, когда ты поправляешь меня, ставишь 👎, и раз в день сам перечитываю переписку.");
   $("#lstat").textContent = D.lessons.length || "";
   $("#lessons").innerHTML = D.lessons.map(l => `<li class="row nocheck"><div class="tx">${esc(l.text)}</div><button class="x" data-del="lessons:${l.id}" aria-label="Удалить">×</button></li>`).join("");
   emptyAfter("#lessons", D.lessons.length, "Пока нет. Ставь 👎 под неудачными ответами — я сделаю выводы.");
