@@ -392,6 +392,27 @@ const TOOLS = [
   { type: "function", function: { name: "get_weather", description: "Текущая погода и прогноз на 3 дня для города.", parameters: { type: "object", properties: { city: { type: "string" } }, required: ["city"] } } },
 ];
 async function getJSON(url, opts) { const r = await fetch(url, opts); if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); }
+/* Поиск Google через Gemini — для Mistral и других мозгов без своего поиска.
+   Скудный дневной лимит Gemini так тратится на самое ценное, что он умеет, — поиск, а не на болтовню. */
+async function googleViaGemini(q, sources) {
+  if (!configured().includes("gemini") || isBlocked("gemini") || Date.now() <= searchOffUntil) return null;
+  for (const model of (await gModels("chat")).filter(m => !isGemma(m)).slice(0, 3)) {
+    try {
+      const body = { contents: [{ role: "user", parts: [{ text: `Найди в интернете свежую информацию: ${q}\nДай сжатую сводку фактов по-русски: цифры, даты, кто/что/где, с указанием источников. Без советов и воды. Не нашёл — так и скажи.` }] }],
+        tools: [{ google_search: {} }], generationConfig: { temperature: 0.2, ...(thinkOff && /^gemini-2\.5-flash/.test(model) ? { thinkingConfig: { thinkingBudget: 0 } } : {}) } };
+      const r = await gStream(model, body, () => {});
+      bump("gemini");
+      r.sources.forEach(x => sources.push(x));
+      return { answer: neutralize(r.text).slice(0, 3000), via: "Google (через Gemini)", results: r.sources.map(x => ({ title: x.title, url: x.url })) };
+    } catch (e) {
+      if (isLocationErr(e)) { blockedUntil.gemini = Date.now() + 5 * 6e4; return null; }
+      if (e.status === 429 && /ground|search/i.test(e.message || "")) { searchOffUntil = Date.now() + 36e5; return null; }   // кончился лимит поиска
+      markDead(model, e);
+      if (!gRetriable(e)) return null;
+    }
+  }
+  return null;
+}
 async function toolWebSearch(q, sources) {
   if (S.tavilyKey) {
     try {
@@ -401,6 +422,8 @@ async function toolWebSearch(q, sources) {
       return { answer: j.answer, results: (j.results || []).map(r => ({ title: r.title, url: r.url, text: (r.content || "").slice(0, 1200) })) };
     } catch {}
   }
+  const g = await googleViaGemini(q, sources).catch(() => null);
+  if (g && g.answer) return g;
   const out = [];
   for (const lang of ["ru", "en"]) {
     try {
