@@ -4,10 +4,10 @@ import { S, D, saveSettings, persist, exportAll, importAll, idbAll, setQuotaHand
 import { chat, plain, order, anyBrain, configured, BRAINS, explain, discoverGemini, ping, canTranscribe, canTTS, isBlocked, ttsGemini } from "./brains.js";
 import { buildPrompt, MODES } from "./prompt.js";
 import { relevantFacts, activeFacts, applyActions, stripActions, extractActions, contextStart, updateDiary, reflect, tidyMemory, lessonFromFeedback, ensureFactVecs, dueCards, gradeCard, CATS } from "./memory.js";
-import { addDoc, removeDoc, search, fromUrl, fromFile, ensureDocVecs } from "./knowledge.js";
+import { addDoc, removeDoc, search, fromUrl, fromFile, ensureDocVecs, docsForPrompt } from "./knowledge.js";
 import * as V from "./voice.js";
 
-const VERSION = "3.1.1";
+const VERSION = "3.2.0";
 let mode = "auto", deep = false, photo = null, busy = null;
 
 /* =================== Часы и статус =================== */
@@ -204,7 +204,8 @@ async function send(text, opts = {}) {
   const onText = t => { const v = stripActions(t); if (v) { body.innerHTML = md(v); scrollDown(); if (opts.onReply) opts.onReply(v); if (!/^(Ищу|Смотрю)/.test(v)) feed(v); } };
   try {
     const [facts, knowledge] = await Promise.all([relevantFacts(text).catch(() => activeFacts().slice(-40)), search(text).catch(() => [])]);
-    const system = brain => buildPrompt({ mode, query: text, facts, knowledge, voice: !!opts.voice, temp, deep, brain });
+    const docs = docsForPrompt();
+    const system = brain => buildPrompt({ mode, query: text, facts, knowledge, docs, voice: !!opts.voice, temp, deep, brain });
     const hist = D.msgs.slice(contextStart(D.msgs)).map(m => ({ role: m.role === "user" ? "user" : "assistant", text: (m.photo && m.role === "user" ? "[прислал фото] " : "") + m.text }));
     const res = await chat({ system, hist, img, onText, signal: ctl.signal, deep });
     const visible = stripActions(res.text) || "Готово.";
@@ -242,6 +243,11 @@ async function send(text, opts = {}) {
     if (raw) { const d = document.createElement("details"); d.className = "errinfo"; d.innerHTML = `<summary>Подробности</summary><pre>${esc(raw.slice(0, 1500))}</pre>`; el.append(d); }
     const box = document.createElement("div"); box.className = "acts";
     box.append(pill("↻ Повторить", () => { el.remove(); send(text, { retry: true, img, voice: opts.voice }); }));
+    // Обычный поиск работает без лимитов нейросетей
+    const q = encodeURIComponent(text.slice(0, 300));
+    [["🔎 Найти в Яндексе", "https://yandex.ru/search/?text=" + q], ["🔎 Найти в Google", "https://www.google.com/search?q=" + q]].forEach(([t, u]) => {
+      const a = document.createElement("a"); a.className = "pill"; a.href = u; a.target = "_blank"; a.rel = "noopener"; a.textContent = t; box.append(a);
+    });
     el.append(box);
     if (opts.voice) throw Object.assign(new Error(m), { spoken: m });
     return "";
@@ -531,9 +537,15 @@ $("#teachForm").addEventListener("submit", async e => {
     let title = $("#tTitle").value.trim(), text = "", kind = "текст";
     if (teachKind === "text") { text = $("#tText").value; title = title || text.trim().split("\n")[0].slice(0, 60); }
     if (teachKind === "url") { const u = $("#tUrl").value.trim(); if (!/^https?:\/\//.test(u)) throw new Error("Вставь ссылку, начинающуюся с https://"); const r = await fromUrl(u); text = r.text; title = title || r.title; kind = "ссылка"; }
-    if (teachKind === "file") { const f = $("#tFile").files[0]; if (!f) throw new Error("Выбери файл."); const r = await fromFile(f); text = r.text; title = title || r.title; kind = /pdf/i.test(f.type + f.name) ? "PDF" : /image/.test(f.type) ? "фото" : "файл"; }
-    const d = await addDoc(title || "Без названия", text, kind);
-    out.textContent = `Изучил «${d.title}»: ${plural(d.chunks, "фрагмент", "фрагмента", "фрагментов")}.`;
+    let pages = 0, note = "";
+    const progress = t => { out.textContent = t; };
+    if (teachKind === "file") {
+      const f = $("#tFile").files[0]; if (!f) throw new Error("Выбери файл.");
+      if (f.size > 200 * 1024 * 1024) throw new Error("Файл больше 200 МБ — раздели его на части.");
+      const r = await fromFile(f, progress); text = r.text; title = title || r.title; kind = r.kind || "файл"; pages = r.pages || 0; note = r.note || "";
+    }
+    const d = await addDoc(title || "Без названия", text, kind, { pages, onProgress: progress });
+    out.textContent = `Изучил «${d.title}»${d.pages ? ` (${d.pages} стр.)` : ""}: ${plural(d.chunks, "фрагмент", "фрагмента", "фрагментов")}${d.vec ? ", понимаю по смыслу" : ""}${d.summary ? ", конспект готов" : ""}. ${note}`;
     $("#tTitle").value = ""; $("#tText").value = ""; $("#tUrl").value = ""; $("#tFile").value = "";
     renderKnow();
   } catch (err) { out.textContent = err.status ? explain(err) : err.message; }
@@ -563,7 +575,9 @@ function fillSettings() {
   $("#rate").value = S.rate; $("#rateVal").textContent = "×" + (+S.rate).toFixed(2);
   $$("[data-ok]").forEach(s => { s.textContent = S[s.dataset.ok] ? "✓" : ""; });
   const list = order();
-  $("#brainNow").textContent = list.length ? "Сейчас отвечает: " + BRAINS[list[0]].name + (list.length > 1 ? ". Запасные: " + list.slice(1).map(b => BRAINS[b].name).join(", ") + "." : ". Подключи ещё один — будет запасной.") : "Ни одна нейросеть не подключена.";
+  const u = D.meta.usage && D.meta.usage.day === todayKey() ? D.meta.usage.n : {};
+  const used = Object.entries(u).map(([b, n]) => `${BRAINS[b] ? BRAINS[b].name : b} — ${n}`).join(", ");
+  $("#brainNow").textContent = (list.length ? "Сейчас отвечает: " + BRAINS[list[0]].name + (list.length > 1 ? ". Запасные: " + list.slice(1).map(b => BRAINS[b].name).join(", ") + "." : ". Подключи ещё один — будет запасной.") : "Ни одна нейросеть не подключена.") + (used ? ` Запросов сегодня: ${used}.` : "");
   idleStatus();
 }
 TEXT_KEYS.forEach(k => $("#" + k).addEventListener("change", e => {
@@ -648,7 +662,7 @@ $("#form").addEventListener("submit", e => {
   if (!v && !photo) { if (busy) busy.abort(); else if (V.speaking()) { V.stopSpeaking(); syncSendBtn(); } return; }
   send(v);
 });
-function setTab(t) { if (t === "set") prepBackup(); document.body.dataset.tab = t; $$(".tabbar button").forEach(b => b.setAttribute("aria-selected", String(b.dataset.tab === t))); if (t === "chat") scrollDown(); }
+function setTab(t) { if (t === "set") { prepBackup(); fillSettings(); } document.body.dataset.tab = t; $$(".tabbar button").forEach(b => b.setAttribute("aria-selected", String(b.dataset.tab === t))); if (t === "chat") scrollDown(); }
 $(".tabbar").addEventListener("click", e => { const b = e.target.closest("[data-tab]"); if (b) setTab(b.dataset.tab); });
 document.addEventListener("touchend", V.unlock, { once: true });
 document.addEventListener("click", V.unlock, { once: true });

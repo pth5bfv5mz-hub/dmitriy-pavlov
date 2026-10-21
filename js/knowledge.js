@@ -1,92 +1,140 @@
 /* База знаний: тексты, ссылки, документы и фото, которые Сумрак даёт Дмитрию «изучить».
-   Текст режется на куски; поиск — по словам (всегда) и по смыслу (векторы Gemini, если доступен),
-   результаты объединяются (reciprocal rank fusion). */
-import { D, persist, idbPut, idbAll, idbDelDoc } from "./store.js";
+   Большие PDF и Word (сотни страниц) читаются прямо на телефоне — без нейросети и без лимитов.
+   Текст режется на фрагменты; поиск — по словам (всегда) и по смыслу (векторы Gemini, если доступен),
+   результаты объединяются (reciprocal rank fusion). Индекс строится один раз и держится в памяти. */
+import { D, S, persist, idbPut, idbAll, idbDelDoc } from "./store.js";
 import { uid, terms, cosine } from "./util.js";
-import { embed, canEmbed, readUrl, plain, configured, isBlocked } from "./brains.js";
-import { S } from "./store.js";
+import { embed, canEmbed, readUrl, plain, configured, isBlocked, anyBrain } from "./brains.js";
 
 function chunkText(text, size = 1100, overlap = 180) {
   const paras = text.replace(/\r/g, "").split(/\n{2,}/).map(p => p.trim()).filter(Boolean);
-  const out = []; let cur = "";
+  const out = []; let cur = "", page = "";
   const push = () => { if (cur.trim()) out.push(cur.trim()); };
   for (const p of paras) {
+    const pm = p.match(/^\[стр\. (\d+)\]$/); if (pm) { page = pm[1]; if (cur) cur += "\n\n" + p; else cur = p; continue; }
     if ((cur + "\n\n" + p).length <= size) { cur = cur ? cur + "\n\n" + p : p; continue; }
     push();
-    if (p.length <= size) { cur = (cur ? cur.slice(-overlap) + "\n\n" : "") + p; continue; }
-    for (let i = 0; i < p.length; i += size - overlap) out.push(p.slice(i, i + size));
+    const lead = page && !/^\[стр\./.test(p) ? `[стр. ${page}] ` : "";
+    if (p.length <= size) { cur = (cur ? cur.slice(-overlap) + "\n\n" : "") + lead + p; continue; }
+    for (let i = 0; i < p.length; i += size - overlap) out.push(lead + p.slice(i, i + size));
     cur = "";
   }
   push();
   return out;
 }
 
-export async function addDoc(title, text, kind = "текст") {
+/* ---------- Индекс в памяти (перестраивается при изменении базы) ---------- */
+let index = null;
+const signature = () => D.docs.map(d => d.id + ":" + (d.vec ? 1 : 0)).join(",");
+async function getIndex() {
+  if (index && index.sig === signature()) return index;
+  const chunks = await idbAll("chunks");
+  const tokens = chunks.map(c => terms(c.title + " " + c.text));
+  const df = new Map(); tokens.forEach(t => new Set(t).forEach(w => df.set(w, (df.get(w) || 0) + 1)));
+  const tf = tokens.map(t => { const m = new Map(); t.forEach(w => m.set(w, (m.get(w) || 0) + 1)); return m; });
+  const avg = tokens.reduce((n, t) => n + t.length, 0) / (chunks.length || 1) || 1;
+  const vecRows = await idbAll("vecs");
+  const vecs = new Map(vecRows.filter(v => !v.id.startsWith("f:")).map(v => [v.id, v]));
+  index = { sig: signature(), chunks, tf, len: tokens.map(t => t.length), df, avg, vecs };
+  return index;
+}
+export const invalidate = () => { index = null; };
+
+/* ---------- Добавление ---------- */
+export async function addDoc(title, text, kind = "текст", { pages = 0, onProgress } = {}) {
   text = String(text || "").trim();
   if (text.length < 20) throw new Error("Слишком мало текста.");
   const docId = uid();
   const parts = chunkText(text);
   const chunks = parts.map((t, i) => ({ id: docId + ":" + i, docId, title, n: i, text: t }));
-  await idbPut("chunks", chunks);
-  let vec = false;
+  onProgress && onProgress(`Сохраняю ${chunks.length} фрагментов…`);
+  for (let i = 0; i < chunks.length; i += 200) await idbPut("chunks", chunks.slice(i, i + 200));
+  const doc = { id: docId, title: String(title).slice(0, 120), kind, ts: Date.now(), chunks: chunks.length, chars: text.length, pages, vec: false, preview: text.slice(0, 200), summary: "" };
+  D.docs.push(doc); persist(); invalidate();
   if (canEmbed()) {
-    try {
-      const r = await embed(chunks.map(c => `${title}\n${c.text}`), "RETRIEVAL_DOCUMENT");
-      if (r) { await idbPut("vecs", chunks.map((c, i) => ({ id: c.id, v: Array.from(r.vecs[i]), m: r.model }))); vec = true; }
-    } catch {}
+    try { await embedChunks(doc, chunks, onProgress); } catch {}   // не вышло — досчитаем позже
   }
-  const doc = { id: docId, title: String(title).slice(0, 120), kind, ts: Date.now(), chunks: chunks.length, chars: text.length, vec, preview: text.slice(0, 200) };
-  D.docs.push(doc); persist();
+  if (anyBrain()) {
+    onProgress && onProgress("Делаю конспект…");
+    try { doc.summary = (await summarize(title, text)).trim().slice(0, 1500); persist(); } catch {}
+  }
+  invalidate();
   return doc;
 }
-export async function removeDoc(id) { await idbDelDoc(id); D.docs = D.docs.filter(d => d.id !== id); persist(); }
-/* Досчитать векторы для документов, добавленных без Gemini. */
+async function embedChunks(doc, chunks, onProgress) {
+  const step = 90 * 4;
+  for (let i = 0; i < chunks.length; i += step) {
+    onProgress && onProgress(`Учу смысл: ${Math.min(i + step, chunks.length)} из ${chunks.length}…`);
+    const part = chunks.slice(i, i + step);
+    const r = await embed(part.map(c => `${doc.title}\n${c.text}`), "RETRIEVAL_DOCUMENT");
+    if (!r) return;
+    await idbPut("vecs", part.map((c, j) => ({ id: c.id, v: r.vecs[j], m: r.model })));
+  }
+  doc.vec = true; persist();
+}
+export async function removeDoc(id) { await idbDelDoc(id); D.docs = D.docs.filter(d => d.id !== id); persist(); invalidate(); }
+/* Досчитать векторы для документов, добавленных без Gemini или прерванных лимитом. */
 export async function ensureDocVecs() {
   if (!canEmbed()) return;
   for (const d of D.docs.filter(d => !d.vec)) {
     try {
-      const chunks = (await idbAll("chunks")).filter(c => c.docId === d.id);
+      const chunks = (await idbAll("chunks")).filter(c => c.docId === d.id).sort((a, b) => a.n - b.n);
       if (!chunks.length) continue;   // текст материала утерян — нечего считать
-      const r = await embed(chunks.map(c => `${d.title}\n${c.text}`), "RETRIEVAL_DOCUMENT");
-      if (r) { await idbPut("vecs", chunks.map((c, i) => ({ id: c.id, v: Array.from(r.vecs[i]), m: r.model }))); d.vec = true; persist(); }
+      await embedChunks(d, chunks);
+      invalidate();
     } catch { return; }
   }
 }
 
-export async function search(query, k = 4) {
+/* ---------- Поиск ---------- */
+export async function search(query, k) {
   if (!D.docs.length) return [];
-  const chunks = await idbAll("chunks"); if (!chunks.length) return [];
-  const qt = terms(query); if (!qt.length) return [];
-  // Ключевые слова (BM25 упрощённо)
-  const N = chunks.length, df = new Map();
-  const tokens = chunks.map(c => { const t = terms(c.title + " " + c.text); new Set(t).forEach(w => df.set(w, (df.get(w) || 0) + 1)); return t; });
-  const avg = tokens.reduce((n, t) => n + t.length, 0) / N || 1;
-  const bm = chunks.map((c, i) => {
-    const t = tokens[i]; let s = 0;
-    for (const q of new Set(qt)) {
-      const f = t.filter(w => w === q).length; if (!f) continue;
-      const idf = Math.log(1 + (N - (df.get(q) || 0) + 0.5) / ((df.get(q) || 0) + 0.5));
-      s += idf * (f * 2.2) / (f + 1.2 * (0.25 + 0.75 * t.length / avg));
+  const ix = await getIndex(); const N = ix.chunks.length; if (!N) return [];
+  k = k || (N > 300 ? 6 : 4);
+  const qt = [...new Set(terms(query))]; if (!qt.length) return [];
+  // Ключевые слова (BM25)
+  const bm = [];
+  for (let i = 0; i < N; i++) {
+    let s = 0; const tf = ix.tf[i];
+    for (const q of qt) {
+      const f = tf.get(q); if (!f) continue;
+      const df = ix.df.get(q) || 0;
+      const idf = Math.log(1 + (N - df + 0.5) / (df + 0.5));
+      s += idf * (f * 2.2) / (f + 1.2 * (0.25 + 0.75 * ix.len[i] / ix.avg));
     }
-    return { c, s };
-  }).filter(x => x.s > 0).sort((a, b) => b.s - a.s);
+    if (s > 0) bm.push({ i, s });
+  }
+  bm.sort((a, b) => b.s - a.s);
   // Смысловой поиск
   let vs = [];
-  if (canEmbed() && D.docs.some(d => d.vec)) {
+  if (canEmbed() && ix.vecs.size) {
     try {
       const r = await embed([query], "RETRIEVAL_QUERY");
-      const vecs = new Map((await idbAll("vecs")).filter(v => r && (!v.m || v.m === r.model)).map(v => [v.id, v.v]));
-      if (r) vs = chunks.filter(c => vecs.has(c.id)).map(c => ({ c, s: cosine(r.vecs[0], vecs.get(c.id)) })).filter(x => x.s > 0.55).sort((a, b) => b.s - a.s);
+      if (r) for (let i = 0; i < N; i++) {
+        const v = ix.vecs.get(ix.chunks[i].id); if (!v || (v.m && v.m !== r.model)) continue;
+        const s = cosine(r.vecs[0], v.v); if (s > 0.55) vs.push({ i, s });
+      }
+      vs.sort((a, b) => b.s - a.s);
     } catch {}
   }
   const score = new Map();
-  [bm, vs].forEach(list => list.slice(0, 20).forEach((x, rank) => score.set(x.c.id, (score.get(x.c.id) || 0) + 1 / (60 + rank))));
-  const byId = new Map(chunks.map(c => [c.id, c]));
-  return [...score.entries()].sort((a, b) => b[1] - a[1]).slice(0, k).map(([id]) => byId.get(id));
+  [bm, vs].forEach(list => list.slice(0, 30).forEach((x, rank) => score.set(x.i, (score.get(x.i) || 0) + 1 / (60 + rank))));
+  return [...score.entries()].sort((a, b) => b[1] - a[1]).slice(0, k).map(([i]) => ix.chunks[i]);
+}
+/* Список материалов с конспектами — чтобы Дмитрий знал, что у Сумрака есть. */
+export function docsForPrompt() {
+  return D.docs.slice(-15).map(d => `- «${d.title}» (${d.kind}${d.pages ? ", " + d.pages + " стр." : ""})${d.summary ? ": " + d.summary.slice(0, 350).replace(/\n+/g, " ") : ""}`).join("\n");
 }
 
-/* ---------- Источники знаний ---------- */
+/* ---------- Чтение источников ---------- */
 const geminiOK = () => configured().includes("gemini") && !isBlocked("gemini");
+const scripts = {};
+function loadScript(src) {
+  return scripts[src] || (scripts[src] = new Promise((res, rej) => {
+    const s = document.createElement("script"); s.src = src; s.onload = res; s.onerror = () => { delete scripts[src]; rej(new Error("Не загрузилась библиотека чтения документов. Проверь интернет.")); };
+    document.head.append(s);
+  }));
+}
 export async function fromUrl(url) {
   let text = "";
   try { text = await readUrl(url); } catch {}
@@ -97,20 +145,73 @@ export async function fromUrl(url) {
   const title = (text.match(/^Title:\s*(.+)$/m) || [])[1] || url.replace(/^https?:\/\//, "").slice(0, 80);
   return { title, text: text.replace(/^(Title|URL Source|Published Time|Markdown Content):.*$/gm, "").trim() };
 }
-export async function fromFile(file) {
+export async function fromFile(file, onProgress = () => {}) {
   const name = file.name || "файл";
-  if (/^text\/|\.(txt|md|csv|json|html?)$/i.test(file.type + " " + name)) return { title: name, text: await file.text() };
-  if (!geminiOK()) throw new Error("Читать PDF и фото умеет только Gemini (нужен ключ и VPN). Текстовые файлы читаются всегда.");
-  if (file.size > 18 * 1024 * 1024) throw new Error("Файл слишком большой (больше 18 МБ).");
-  const b64 = await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(String(r.result).split(",")[1]); r.onerror = rej; r.readAsDataURL(file); });
-  const mime = file.type || (/\.pdf$/i.test(name) ? "application/pdf" : "image/jpeg");
-  const text = await geminiExtract([{ text: "Извлеки весь текст из этого документа или изображения дословно, сохраняя структуру (заголовки, списки, таблицы как текст). Если это фото без текста — подробно опиши, что на нём. Только результат." }, { inline_data: { mime_type: mime, data: b64 } }]);
-  return { title: name, text };
+  const type = (file.type || "") + " " + name;
+  if (/\.pdf$|application\/pdf/i.test(type)) return readPdf(file, onProgress);
+  if (/\.docx$|wordprocessingml/i.test(type)) {
+    onProgress("Открываю документ Word…");
+    await loadScript("lib/mammoth.browser.min.js");
+    const r = await window.mammoth.extractRawText({ arrayBuffer: await file.arrayBuffer() });
+    return { title: name.replace(/\.docx$/i, ""), text: r.value, kind: "Word" };
+  }
+  if (/^text\/|\.(txt|md|csv|json|html?|xml|rtf|log)$/i.test(type)) return { title: name, text: await file.text(), kind: "файл" };
+  if (/image\//i.test(type)) {
+    if (!geminiOK()) throw new Error("Читать фото умеет Gemini (нужен ключ и VPN).");
+    const b64 = await fileB64(file);
+    const text = await geminiExtract([{ text: "Извлеки весь текст с изображения дословно, сохраняя структуру. Если текста нет — подробно опиши, что на нём. Только результат." }, { inline_data: { mime_type: file.type || "image/jpeg", data: b64 } }]);
+    return { title: name, text, kind: "фото" };
+  }
+  throw new Error("Этот формат я пока не читаю. Подойдут PDF, Word (.docx), текстовые файлы и фото.");
+}
+const fileB64 = file => new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(String(r.result).split(",")[1]); r.onerror = rej; r.readAsDataURL(file); });
+
+async function readPdf(file, onProgress) {
+  onProgress("Открываю PDF…");
+  await loadScript("lib/pdf.min.js");
+  const lib = window.pdfjsLib;
+  lib.GlobalWorkerOptions.workerSrc = "lib/pdf.worker.min.js";
+  const pdf = await lib.getDocument({ data: new Uint8Array(await file.arrayBuffer()) }).promise;
+  const n = pdf.numPages; const pages = [];
+  for (let i = 1; i <= n; i++) {
+    if (i % 5 === 1 || i === n) onProgress(`Читаю страницы: ${i} из ${n}…`);
+    const page = await pdf.getPage(i);
+    const tc = await page.getTextContent();
+    let t = ""; for (const it of tc.items) { t += it.str; t += it.hasEOL ? "\n" : " "; }
+    pages.push(t.replace(/[ \t]+/g, " ").replace(/\n\s*\n+/g, "\n").trim());
+    page.cleanup();
+  }
+  const textChars = pages.reduce((a, p) => a + p.length, 0);
+  const title = file.name.replace(/\.pdf$/i, "");
+  // Почти нет текста — это скан. Распознаём через Gemini пачками страниц-картинок.
+  if (textChars < n * 40) {
+    if (!geminiOK()) throw new Error("Это скан без текстового слоя. Распознать его может Gemini (нужен ключ и VPN).");
+    const max = Math.min(n, 120);
+    for (let i = 1; i <= max; i += 5) {
+      const imgs = [];
+      for (let j = i; j < i + 5 && j <= max; j++) imgs.push(await renderPage(pdf, j));
+      onProgress(`Распознаю скан: страницы ${i}–${Math.min(i + 4, max)} из ${max}…`);
+      const text = await geminiExtract([{ text: `Это страницы ${i}–${Math.min(i + 4, max)} документа. Распознай весь текст дословно. Перед текстом каждой страницы пиши строку [стр. N]. Только текст.` },
+        ...imgs.map(b64 => ({ inline_data: { mime_type: "image/jpeg", data: b64 } }))]);
+      for (let j = i; j < i + 5 && j <= max; j++) pages[j - 1] = "";
+      pages[i - 1] = text;
+    }
+    return { title, text: pages.filter(Boolean).join("\n\n"), kind: "PDF (скан)", pages: n, note: n > max ? `Распознал первые ${max} страниц из ${n}.` : "" };
+  }
+  return { title, text: pages.map((p, i) => p ? `[стр. ${i + 1}]\n\n${p}` : "").filter(Boolean).join("\n\n"), kind: "PDF", pages: n };
+}
+async function renderPage(pdf, i) {
+  const page = await pdf.getPage(i);
+  const vp = page.getViewport({ scale: 1.4 });
+  const c = document.createElement("canvas"); c.width = vp.width; c.height = vp.height;
+  await page.render({ canvasContext: c.getContext("2d"), viewport: vp }).promise;
+  page.cleanup();
+  return c.toDataURL("image/jpeg", 0.7).split(",")[1];
 }
 async function geminiExtract(parts, withUrl) {
-  const models = (D.meta.models && D.meta.models.chat) || ["gemini-flash-latest"];
+  const models = [...((D.meta.models && D.meta.models.lite) || []), ...((D.meta.models && D.meta.models.chat) || []), "gemini-flash-lite-latest", "gemini-flash-latest"];
   let last;
-  for (const model of models.slice(0, 3)) {
+  for (const model of [...new Set(models)].slice(0, 5)) {
     try {
       const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(S.geminiKey.trim())}`, {
         method: "POST", headers: { "Content-Type": "application/json" },
@@ -119,11 +220,15 @@ async function geminiExtract(parts, withUrl) {
       if (!res.ok) { let m = ""; try { m = (await res.json()).error.message; } catch {} throw Object.assign(new Error(m || "HTTP " + res.status), { status: res.status }); }
       const j = await res.json();
       return ((j.candidates?.[0]?.content?.parts) || []).filter(p => !p.thought).map(p => p.text || "").join("").trim();
-    } catch (e) { last = e; if (![404, 429, 500, 503].includes(e.status)) throw e; }
+    } catch (e) { last = e; if (![400, 403, 404, 429, 500, 503].includes(e.status)) throw e; }
   }
   throw last;
 }
-/* Сжатый конспект для заголовка/описания документа (по желанию). */
+/* Конспект документа: начало, заголовки и выборка из середины и конца — одним запросом. */
 export async function summarize(title, text) {
-  return plain("Ты делаешь короткие конспекты. По-русски.", `Документ «${title}». Сделай конспект в 3–5 предложениях: о чём он и главное.\n\n${text.slice(0, 20000)}`);
+  const heads = (text.match(/^.{3,90}$/gm) || []).filter(l => /^(глава|раздел|часть|chapter|section|\d+(\.\d+)*\s)/i.test(l.trim())).slice(0, 60).join("\n");
+  const L = text.length;
+  const sample = L <= 24000 ? text : [text.slice(0, 12000), text.slice(L / 2 - 3000, L / 2 + 3000), text.slice(-5000)].join("\n…\n");
+  return plain("Ты делаешь конспекты документов для личного ассистента. По-русски, ёмко, без воды.",
+    `Документ «${title}» (${Math.round(L / 1800)} стр. примерно).\n${heads ? "Заголовки:\n" + heads + "\n\n" : ""}Фрагменты:\n${sample}\n\nНапиши конспект до 1200 символов: о чём документ, его структура (главные разделы), ключевые идеи, цифры и выводы.`);
 }

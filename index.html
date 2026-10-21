@@ -77,7 +77,7 @@
     <!-- ============ Знания ============ -->
     <section class="view page" id="v-know" aria-label="Знания">
       <h2>Научить Дмитрия</h2>
-      <p class="small">Дай мне материал — я изучу его и буду опираться на него в ответах. Или просто скажи в разговоре: «Научись…».</p>
+      <p class="small">Дай мне материал — я изучу его, сделаю конспект и буду опираться на него в ответах. PDF и Word на сотни страниц читаю прямо на телефоне. Или просто скажи в разговоре: «Научись…».</p>
       <div class="seg" id="teachSeg">
         <button type="button" data-k="text" aria-pressed="true">Текст</button>
         <button type="button" data-k="url" aria-pressed="false">Ссылка</button>
@@ -87,7 +87,7 @@
         <input id="tTitle" placeholder="Название (необязательно)" aria-label="Название">
         <textarea id="tText" rows="5" placeholder="Вставь текст: конспект, статью, инструкцию, правила…" aria-label="Текст"></textarea>
         <input id="tUrl" type="url" placeholder="https://…" aria-label="Ссылка" hidden>
-        <input id="tFile" type="file" accept=".txt,.md,.csv,.json,.pdf,image/*,text/*,application/pdf" aria-label="Файл" hidden>
+        <input id="tFile" type="file" accept=".txt,.md,.csv,.json,.pdf,.docx,image/*,text/*,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document" aria-label="Файл" hidden>
         <div class="row-btns"><button type="submit" class="primary-btn" id="tGo">Изучить</button><span class="small" id="tOut"></span></div>
       </form>
       <h2>Изученные материалы <span id="dstat"></span></h2>

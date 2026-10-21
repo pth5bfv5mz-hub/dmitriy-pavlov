@@ -2,7 +2,7 @@
    Gemini — самый умный (поиск Google, голос, распознавание речи, эмбеддинги), но из России только через VPN.
    Mistral и Z.ai — работают из России без VPN; для них поиск и погода сделаны инструментами. */
 import { S, D, persist } from "./store.js";
-import { sleep } from "./util.js";
+import { sleep, todayKey } from "./util.js";
 
 export const BRAINS = {
   gemini: { name: "Gemini", needs: "geminiKey" },
@@ -413,6 +413,12 @@ async function plainClaude(system, prompt) {
    ОБЩИЙ ВХОД: перебираем мозги по порядку
    ===================================================================== */
 const shouldFallback = e => e.name !== "AbortError" && (isLocationErr(e) || e.name === "TypeError" || e.status === 429 || e.status >= 500 || e.status === 403 || e.status === 404 || (e.status === 400 && !isKeyErr(e)));
+/* Счётчик запросов за день — чтобы видеть, сколько тратится. */
+function bump(b) {
+  const day = todayKey();
+  if (!D.meta.usage || D.meta.usage.day !== day) D.meta.usage = { day, n: {} };
+  D.meta.usage.n[b] = (D.meta.usage.n[b] || 0) + 1;
+}
 /* История для любой нейросети: начинается с вопроса, одинаковые роли подряд склеены. */
 function normHist(hist) {
   const out = [];
@@ -436,6 +442,7 @@ export async function chat(opts) {
       onStatus: t => opts.onText(t), onText: t => { gotText = true; opts.onText(t); } };
     try {
       const r = b === "gemini" ? await chatGemini(o) : b === "claude" ? await chatClaude(o) : await chatCompat(b, o);
+      bump(b); persist();
       return { ...r, brain: b };
     } catch (e) {
       e.brain = e.brain || b; last = e;
@@ -448,7 +455,7 @@ export async function chat(opts) {
 export async function plain(system, prompt, opts) {
   let last;
   for (const b of order()) {
-    try { return b === "gemini" ? await plainGemini(system, prompt, opts) : b === "claude" ? await plainClaude(system, prompt) : await plainCompat(b, system, prompt); }
+    try { const t = b === "gemini" ? await plainGemini(system, prompt, opts) : b === "claude" ? await plainClaude(system, prompt) : await plainCompat(b, system, prompt); bump(b); return t; }
     catch (e) { e.brain = e.brain || b; last = e; if (!shouldFallback(e)) throw e; }
   }
   throw last || new BrainError("Нет подключённой нейросети", 0, null);
