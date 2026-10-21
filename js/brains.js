@@ -42,7 +42,9 @@ export function explain(e) {
   if (isLocationErr(e)) return "Gemini не пускает из России. Включи VPN (США или Европа) — или подключи Mistral во вкладке «Настройки», он работает без VPN.";
   if (isKeyErr(e)) return `${who}: ключ не подходит. Проверь его во вкладке «Настройки».`;
   if (s === 403) return `${who}: доступ запрещён. ${m.slice(0, 140)}`;
-  if (s === 429) return `${who}: бесплатный лимит на сейчас исчерпан. Подожди минуту (или до завтра, если это дневной лимит). Можно подключить запасную нейросеть в «Настройках».`;
+  if (s === 429 && /limit:\s*0\b/i.test(m)) return `${who}: бесплатному ключу Google не даёт доступ к доступным моделям (лимит 0). Подключи запасной мозг (Mistral) в «Настройках» — или пришли мне подробности ниже.`;
+  if (s === 429 && /per.?day|daily|PerDay/i.test(m)) return `${who}: дневной бесплатный лимит исчерпан у всех моделей. Он обновится завтра. Пока может отвечать запасной мозг (Mistral) — подключи его в «Настройках».`;
+  if (s === 429) return `${who}: Google просит подождать (лимит запросов в минуту). Повтори через минуту. Я уже перепробовал все доступные модели.`;
   if (s >= 500) return `${who} сейчас перегружен. Повтори через минуту.`;
   if (e && e.name === "TypeError") return "Нет связи с нейросетью. Проверь интернет. Для Gemini нужен включённый VPN.";
   return `${who}: не получилось. ${m.slice(0, 200)}`;
@@ -115,11 +117,27 @@ export async function discoverGemini(force) {
     return cached || { at: 0, ...STATIC };
   }
 }
+/* Модели, к которым у бесплатного ключа нет доступа (лимит 0) или которых нет, — пропускаем сутки. */
+const dead = () => (D.meta.deadModels = D.meta.deadModels || {});
+const isDead = id => (dead()[id] || 0) > Date.now();
+function markDead(id, e) {
+  const m = String(e && e.message || "");
+  if (e && e.status === 404) dead()[id] = Date.now() + 7 * 864e5;
+  else if (e && e.status === 429 && /limit:\s*0\b|free.?tier.*not|not available.*free/i.test(m)) dead()[id] = Date.now() + 864e5;
+  else if (e && e.status === 429) dead()[id] = Date.now() + 65e3;   // минутный лимит — пробуем другие, к этой вернёмся через минуту
+  else return;
+  persist();
+}
 async function gModels(kind) {
   const m = await discoverGemini();
-  const pref = S.geminiModel && S.geminiModel !== "auto" && kind === "chat" ? [S.geminiModel] : [];
-  const list = kind === "deep" ? [...(m.deep || []), ...(m.chat || [])] : (m[kind] && m[kind].length ? m[kind] : STATIC[kind]);
-  return [...new Set([...pref, ...list])].slice(0, 5);
+  const pref = S.geminiModel && S.geminiModel !== "auto" && (kind === "chat" || kind === "deep") ? [S.geminiModel] : [];
+  const get = k => (m[k] && m[k].length ? m[k] : STATIC[k]);
+  // Для ответа: обычные модели, а за ними облегчённые — у них самые щедрые бесплатные лимиты
+  const list = kind === "deep" ? [...get("deep"), ...get("chat"), ...get("lite")]
+    : kind === "chat" ? [...get("chat"), ...get("lite")] : get(kind);
+  const all = [...new Set([...pref, ...list])];
+  const alive = all.filter(id => !isDead(id));
+  return (alive.length ? alive : all).slice(0, 8);
 }
 const gRetriable = e => !isLocationErr(e) && !isKeyErr(e) && e.name !== "AbortError" && [400, 403, 404, 429, 500, 502, 503, 504].includes(e.status);
 
@@ -150,26 +168,32 @@ async function gStream(model, body, onText, signal) {
   if (!text) throw new BrainError("Пустой ответ", 503, "gemini");
   return { text, sources, model };
 }
+let searchOffUntil = 0;   // кончился бесплатный лимит поиска Google — отвечаем без поиска
 async function chatGemini({ system, hist, img, onText, signal, deep }) {
   const base = { system_instruction: { parts: [{ text: system }] }, contents: gContents(hist, img), generationConfig: { temperature: deep ? 0.4 : 0.6 } };
-  let last;
+  let last; const tried = [];
+  const toolSets = () => Date.now() < searchOffUntil ? [undefined] : [[{ google_search: {} }, { url_context: {} }], [{ google_search: {} }], undefined];
   for (const model of await gModels(deep ? "deep" : "chat")) {
-    for (const tools of [[{ google_search: {} }, { url_context: {} }], [{ google_search: {} }], undefined]) {
-      try { return await gStream(model, tools ? { ...base, tools } : base, onText, signal); }
+    for (const tools of toolSets()) {
+      try { const r = await gStream(model, tools ? { ...base, tools } : base, onText, signal); r.noSearch = !tools; return r; }
       catch (e) {
         last = e;
         if (e.status === 400 && /tool|url_context|search|grounding/i.test(e.message || "")) continue;
+        if (e.status === 429 && tools && /search|grounding/i.test(e.message || "")) { searchOffUntil = Date.now() + 36e5; continue; }
         break;
       }
     }
+    tried.push(`${model}: ${last.status || ""} ${String(last.message || "").slice(0, 160)}`);
+    markDead(model, last);
     if (isLocationErr(last)) blockedUntil.gemini = Date.now() + 5 * 6e4;
     if (!gRetriable(last)) throw last;
   }
+  if (last) last.tried = tried;
   throw last;
 }
 async function plainGemini(system, prompt, { json } = {}) {
   let last;
-  for (const model of [...await gModels("lite"), ...await gModels("chat")].slice(0, 6)) {
+  for (const model of [...new Set([...await gModels("lite"), ...await gModels("chat")])].slice(0, 6)) {
     try {
       const res = await fetch(`${G}/models/${encodeURIComponent(model)}:generateContent?key=${gkey()}`, {
         method: "POST", headers: { "Content-Type": "application/json" },
@@ -179,7 +203,7 @@ async function plainGemini(system, prompt, { json } = {}) {
       if (!res.ok) await httpError(res, "gemini");
       const j = await res.json();
       return ((j.candidates?.[0]?.content?.parts) || []).filter(p => !p.thought).map(p => p.text || "").join("");
-    } catch (e) { last = e; if (!gRetriable(e)) throw e; }
+    } catch (e) { last = e; markDead(model, e); if (!gRetriable(e)) throw e; }
   }
   throw last;
 }

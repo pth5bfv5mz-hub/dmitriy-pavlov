@@ -168,3 +168,5 @@ details.field[open] summary{margin-bottom:6px}
 .talk-hint{max-width:34ch}
 @media (prefers-reduced-motion:reduce){.talk .orb,.talk .orb-ring{animation:none!important}}
 #diag .due{font-family:inherit;font-size:13.5px}
+.errinfo{margin-top:6px;font-size:12.5px;color:var(--muted)}
+.errinfo pre{white-space:pre-wrap;overflow-wrap:anywhere;font-family:var(--font-mono);font-size:11.5px;margin:6px 0 0;background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:8px}

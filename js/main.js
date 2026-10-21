@@ -7,7 +7,7 @@ import { relevantFacts, activeFacts, applyActions, stripActions, extractActions,
 import { addDoc, removeDoc, search, fromUrl, fromFile, ensureDocVecs } from "./knowledge.js";
 import * as V from "./voice.js";
 
-const VERSION = "3.1.0";
+const VERSION = "3.1.1";
 let mode = "auto", deep = false, photo = null, busy = null;
 
 /* =================== Часы и статус =================== */
@@ -143,7 +143,7 @@ function showSetupCard() {
     const results = [];
     for (const b of configured()) {
       try { const r = await ping(b); results.push(`✅ ${BRAINS[b].name} — работает (${r.model}, ${(r.ms / 1000).toFixed(1)} с)`); }
-      catch (e) { results.push(`⚠️ ${BRAINS[b].name}: ${explain(e)}`); }
+      catch (e) { results.push(`⚠️ ${explain(e)}`); }
     }
     w.querySelector(".body").innerHTML = md(results.join("\n") + "\n\nМожешь говорить или писать.");
     idleStatus(); discoverGemini().then(fillGeminiModels).catch(() => {});
@@ -237,6 +237,9 @@ async function send(text, opts = {}) {
     if (e.name === "AbortError") { body.innerHTML = `<span class="thinking">Остановлено.</span>`; return ""; }
     const m = explain(e);
     body.innerHTML = `<span class="thinking">${esc(m)}</span>`;
+    // Подробности от сервиса — чтобы можно было переслать и понять причину
+    const raw = [e.status ? "Код " + e.status : "", String(e.message || ""), ...(e.tried || [])].filter(Boolean).join("\n");
+    if (raw) { const d = document.createElement("details"); d.className = "errinfo"; d.innerHTML = `<summary>Подробности</summary><pre>${esc(raw.slice(0, 1500))}</pre>`; el.append(d); }
     const box = document.createElement("div"); box.className = "acts";
     box.append(pill("↻ Повторить", () => { el.remove(); send(text, { retry: true, img, voice: opts.voice }); }));
     el.append(box);
