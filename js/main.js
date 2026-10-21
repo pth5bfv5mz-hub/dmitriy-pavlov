@@ -9,14 +9,16 @@ import { relevantFacts, activeFacts, applyActions, stripActions, extractActions,
 import { addDoc, removeDoc, search, fromUrl, fromFile, ensureDocVecs, docsForPrompt } from "./knowledge.js";
 import * as V from "./voice.js";
 
-const VERSION = "3.13.0";
+const VERSION = "3.13.1";
 let mode = "auto", deep = false, photo = null, busy = null, lastFail = "";
 
 /* =================== Часы и статус =================== */
 function tickClock() {
   const d = new Date();
   $("#time").textContent = hm(d);
-  $("#date").textContent = DAYS[d.getDay()] + ", " + d.getDate() + " " + MONTHS[d.getMonth()];
+  // Узкий экран — короткая дата («ср, 21 окт»), чтобы шапка не переносилась в две строки
+  $("#date").textContent = innerWidth <= 360 ? d.toLocaleDateString("ru-RU", { weekday: "short", day: "numeric", month: "short" }).replace(/\.$/, "")
+    : DAYS[d.getDay()] + ", " + d.getDate() + " " + MONTHS[d.getMonth()];
 }
 function status(text, cls) {
   $("#status").textContent = text;
