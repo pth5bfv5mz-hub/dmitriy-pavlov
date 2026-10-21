@@ -98,7 +98,8 @@ async function phonemize(text, voice) {
       getPreloadedPackage: () => a.data,
       locateFile: f => LIB + (f.endsWith(".wasm") ? "piper_phonemize.wasm" : f.endsWith(".data") ? "piper_phonemize.data" : f),
     }).then(mod => {
-      mod.callMain(["-l", voice, "--input", JSON.stringify([{ text }]), "--espeak_data", "/espeak-ng-data"]);
+      try { mod.callMain(["-l", voice, "--input", JSON.stringify([{ text }]), "--espeak_data", "/espeak-ng-data"]); }
+      catch (e) { if (!done) { done = true; clearTimeout(timer); reject(e); } }   // сразу, а не через 20 с
     }, e => { if (!done) { done = true; clearTimeout(timer); reject(e); } });
   });
 }

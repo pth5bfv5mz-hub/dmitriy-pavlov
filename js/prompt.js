@@ -1,7 +1,7 @@
 /* Правила Дмитрия: характер, мышление, режимы-эксперты, память и формат действий.
    Порядок сборки: личность → как думать → режим → профиль и память → знания → дела → время → формат действий. */
 import { D } from "./store.js";
-import { nowText, calendarText, isoLocal, REPEAT_TXT } from "./util.js";
+import { nowText, calendarText, isoLocal, REPEAT_TXT, neutralize } from "./util.js";
 import { CATS, skillsForPrompt, openMistakes } from "./memory.js";
 
 export const MODES = {
@@ -130,7 +130,7 @@ ${D.lessons.slice(-30).map(l => "- " + l.text).join("\n") || "(пока нет)"
 
 НАВЫКИ, КОТОРЫМ СУМРАК ТЕБЯ НАУЧИЛ:
 ${skills || "(пока нет)"}
-${docs ? `\nМАТЕРИАЛЫ, КОТОРЫЕ ИЗУЧИЛ СУМРАК (можешь сослаться; при вопросе по ним я подставлю нужные отрывки):\n${docs}\n` : ""}${knowledge.length ? `\nИЗ БАЗЫ ЗНАНИЙ СУМРАКА (подходящие отрывки — опирайся на них и указывай, из какого материала и страницы):\n${knowledge.map(c => `[«${c.title}»]\n${c.text}`).join("\n---\n")}\n` : ""}
+${docs ? `\nМАТЕРИАЛЫ, КОТОРЫЕ ИЗУЧИЛ СУМРАК (можешь сослаться; при вопросе по ним я подставлю нужные отрывки):\n${neutralize(docs)}\n` : ""}${knowledge.length ? `\nИЗ БАЗЫ ЗНАНИЙ СУМРАКА (подходящие отрывки — опирайся на них и указывай, из какого материала и страницы):\n${knowledge.map(c => `[«${neutralize(c.title)}»]\n${neutralize(c.text)}`).join("\n---\n")}\n` : ""}
 ОТКРЫТЫЕ ДЕЛА И НАПОМИНАНИЯ:
 ${openTasks.map(t => `- [${t.id}] ${t.text}${t.due ? " — " + isoLocal(t.due) + (t.due < now ? (t.notifiedAt ? ` (ПРОСРОЧЕНО; напоминание приложение показало в ${isoLocal(t.notifiedAt).slice(11)})` : " (ПРОСРОЧЕНО)") : "") : ""}${t.repeat ? " (" + REPEAT_TXT[t.repeat] + ")" : ""}`).join("\n") || "(нет)"}
 

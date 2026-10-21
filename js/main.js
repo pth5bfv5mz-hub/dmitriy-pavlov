@@ -1,6 +1,6 @@
 /* Дмитрий Павлов 3.0 — сборка интерфейса. */
 import { $, $$, uid, esc, md, plural, fmtDue, fmtAgo, isoLocal, hm, dayStart, todayKey, parseLocal, nextDue, pad, REPEAT_TXT, DAYS, MONTHS } from "./util.js";
-import { S, D, saveSettings, persist, exportAll, importAll, idbAll, setQuotaHandler } from "./store.js";
+import { S, D, saveSettings, persist, exportAll, importAll, idbAll, setQuotaHandler, dataVersion } from "./store.js";
 import { chat, plain, order, anyBrain, configured, BRAINS, explain, discoverGemini, ping, canTranscribe, canTTS, isBlocked, ttsGemini, discoverOpenRouter } from "./brains.js";
 // Признаки «не знаю свежего» в ответе модели без поиска
 const NOKNOW_RE = /(нет|не имею) (доступа|возможности)[^.]{0,30}(интернет|актуальн|свеж|реальн|текущ)|не могу (проверить|знать|посмотреть|найти)[^.]{0,25}(интернет|актуальн|текущ|сейчас|сегодня)|на момент (моего )?(обучения|последнего обновления)|(у меня )?нет (актуальн|свеж)[а-я]* (данных|информации|сведений)|не располагаю (актуальн|свеж)|мои (данные|знания) (ограничены|заканчиваются)|рекомендую (проверить|уточнить) на (официальн|сайт)/i;
@@ -9,7 +9,7 @@ import { relevantFacts, activeFacts, applyActions, stripActions, extractActions,
 import { addDoc, removeDoc, search, fromUrl, fromFile, ensureDocVecs, docsForPrompt } from "./knowledge.js";
 import * as V from "./voice.js";
 
-const VERSION = "3.9.0";
+const VERSION = "3.10.0";
 let mode = "auto", deep = false, photo = null, busy = null;
 
 /* =================== Часы и статус =================== */
@@ -34,6 +34,9 @@ function syncSendBtn() {
   const stop = !!busy || V.speaking();
   $("#send").classList.toggle("stop", stop);
   $("#send").title = busy ? "Остановить" : V.speaking() ? "Замолчать" : "Отправить";
+  $("#send").setAttribute("aria-label", $("#send").title);
+  // Пока ответ пишется, экранный диктор ждёт и читает готовое сообщение, а не каждый кусок
+  $("#log").setAttribute("aria-busy", String(!!busy));
 }
 function toast(t, ms) {
   $("#toastText").textContent = t; $("#toast").hidden = false;
@@ -178,7 +181,7 @@ function showBriefing() {
 /* =================== Отправка =================== */
 async function send(text, opts = {}) {
   text = String(text || "").trim();
-  const img = opts.retry ? opts.img : (opts.voice ? null : photo);
+  const img = "img" in opts ? opts.img : (opts.voice ? null : photo);
   if (!text && img) text = "Посмотри на фото и помоги.";
   if (!text) return "";
   if (busy) busy.abort();
@@ -207,7 +210,10 @@ async function send(text, opts = {}) {
     while ((m = re.exec(rest))) { if (m.index + m[0].length >= (spokenTo ? 120 : 40)) { cut = m.index + m[0].length; break; } }
     if (cut > 0) { speaker.add(rest.slice(0, cut)); spokenTo += cut; }
   };
-  const onText = t => { const v = stripActions(t); if (v) { body.innerHTML = md(v); scrollDown(); if (opts.onReply) opts.onReply(v); if (!/^(Ищу|Смотрю)/.test(v)) feed(v); } };
+  // Перерисовка не чаще кадра экрана: на длинных ответах md() для каждого кусочка тормозил телефон
+  let pending = "", raf = 0;
+  const paint = () => { raf = 0; if (pending && busy === ctl) { body.innerHTML = md(pending); scrollDown(); } };
+  const onText = t => { const v = stripActions(t); if (v) { pending = v; if (!raf) raf = requestAnimationFrame(paint); if (opts.onReply) opts.onReply(v); if (!/^(Ищу|Смотрю)/.test(v)) feed(v); } };
   try {
     const [facts, knowledge] = await Promise.all([relevantFacts(text).catch(() => activeFacts().slice(-40)), search(text).catch(() => [])]);
     const docs = docsForPrompt();
@@ -224,6 +230,7 @@ async function send(text, opts = {}) {
       catch (e2) { if (e2.name === "AbortError") throw e2; }   // не вышло — оставим первый ответ
     }
     const visible = stripActions(res.text) || "Готово.";
+    if (raf) { cancelAnimationFrame(raf); raf = 0; }
     body.innerHTML = md(visible);
     feed(visible, true);
     const who = (BRAINS[res.brain]?.name || "") + (/^gemma/.test(res.model || "") ? " · Gemma" : /small|ministral|nemo/.test(res.model || "") ? " · запасная" : "");
@@ -260,7 +267,12 @@ async function send(text, opts = {}) {
     const raw = [e.status ? "Код " + e.status : "", String(e.message || ""), ...(e.tried || [])].filter(Boolean).join("\n");
     if (raw) { const d = document.createElement("details"); d.className = "errinfo"; d.innerHTML = `<summary>Подробности</summary><pre>${esc(raw.slice(0, 1500))}</pre>`; el.append(d); }
     const box = document.createElement("div"); box.className = "acts";
-    box.append(pill("↻ Повторить", () => { el.remove(); send(text, { retry: true, img, voice: opts.voice }); }));
+    // Повтор: если после этого вопроса разговор уже ушёл дальше — задаём его заново в конце, иначе история собралась бы неверно
+    box.append(pill("↻ Повторить", () => {
+      el.remove();
+      const last = D.msgs[D.msgs.length - 1];
+      send(text, { retry: !!(last && last.role === "user" && last.text === text), img, voice: opts.voice }).catch(() => {});
+    }));
     // Обычный поиск работает без лимитов нейросетей
     const q = encodeURIComponent(text.slice(0, 300));
     [["🔎 Найти в Яндексе", "https://yandex.ru/search/?text=" + q], ["🔎 Найти в Google", "https://www.google.com/search?q=" + q]].forEach(([t, u]) => {
@@ -271,7 +283,7 @@ async function send(text, opts = {}) {
     return "";
   } finally {
     if (busy === ctl) busy = null;
-    idleStatus();
+    idleStatus(); syncSendBtn();
   }
 }
 function addTaskButtons(el, list) {
@@ -392,6 +404,7 @@ function openTalk({ waitTap = false } = {}) {
   if (!anyBrain()) { toast("Сначала подключи мозг в «Настройках»."); return; }
   V.stopSpeaking(); if (busy) busy.abort();      // старый ответ не должен звучать в микрофон
   talkOn = true; $("#talkView").hidden = false; $("#talkText").textContent = "";
+  $(".app").inert = true; setTimeout(() => $("#orb").focus(), 50);   // фокус — в окно разговора, приложение под ним недоступно
   $("#talkBrain").textContent = (order()[0] ? BRAINS[order()[0]].name : "") + " · " + V.engineName();
   // При открытии приложения iPhone не даёт включить звук и микрофон без касания — ждём одно нажатие на круг
   if (waitTap) { talkGreet = true; talkSet("idle", "Нажми на круг и говори"); return; }
@@ -399,7 +412,7 @@ function openTalk({ waitTap = false } = {}) {
 }
 let talkGreet = false;   // поздороваться первым при начале разговора
 function closeTalk() {
-  talkOn = false; talkGen++; $("#talkView").hidden = true;
+  talkOn = false; talkGen++; $("#talkView").hidden = true; $(".app").inert = false;
   V.stopRecording(true); V.stopSpeaking(); if (busy) busy.abort(); idleStatus();
 }
 $("#talkClose").onclick = closeTalk;
@@ -516,7 +529,9 @@ function checkReminders() {
       t.notifiedAt = now;
       const msg = "Сумрак, напоминаю: " + t.text;
       toast("⏰ " + t.text); V.beep(); addMsg("ai", msg);
-      if (!talkOn) V.speak(msg, { force: true });
+      // Не говорим поверх записи (иначе напоминание попадёт в микрофон как фраза Сумрака)
+      // и не обрываем ответ, который сейчас звучит, — тогда хватит сигнала и сообщения
+      if (!talkOn && !V.isRecording() && !V.speaking() && !busy) V.speak(msg, { force: true });
     }
     if (t.repeat) { t.due = nextDue(t.due, t.repeat); t.notified = false; } else t.notified = true;
   });
@@ -538,23 +553,25 @@ function emptyAfter(sel, n, text) {
   if (!p || !p.classList.contains("empty")) { p = document.createElement("p"); p.className = "empty"; ul.after(p); }
   p.textContent = text; p.hidden = n > 0;
 }
+/* Важность 1–10 точками (значение ограничено — испорченные данные не ломают экран). */
+const dots = imp => { const k = Math.max(0, Math.min(5, Math.round((+imp || 5) / 2))); return "●".repeat(k) + "○".repeat(5 - k); };
 function renderTasks() {
   const ts = D.tasks.slice().sort((a, b) => (a.done - b.done) || ((a.due ?? 9e15) - (b.due ?? 9e15)) || (a.ts - b.ts));
   const open = ts.filter(t => !t.done).length;
   $("#tstat").textContent = open ? open + " откр." : ""; $("#tcount").textContent = open ? "·" + open : "";
   $("#tasks").innerHTML = ts.map(t => `<li class="row${t.done ? " done" : ""}">
-      <input type="checkbox" data-done="${t.id}" ${t.done ? "checked" : ""} aria-label="Готово">
-      <div class="tx">${esc(t.text)}${t.due ? `<span class="due${!t.done && t.due < Date.now() ? " over" : ""}">${fmtDue(t.due)}${t.repeat ? " · " + REPEAT_TXT[t.repeat] : ""}</span>` : ""}</div>
-      <div class="btns">${t.due && !t.done ? `<button class="x" data-ios="${t.id}" title="В Напоминания iPhone">⏰</button>` : ""}<button class="x" data-del="tasks:${t.id}" aria-label="Удалить">×</button></div></li>`).join("");
+      <input type="checkbox" data-done="${esc(t.id)}" ${t.done ? "checked" : ""} aria-label="Готово">
+      <div class="tx">${esc(t.text)}${t.due ? `<span class="due${!t.done && t.due < Date.now() ? " over" : ""}">${fmtDue(t.due)}${t.repeat && Object.hasOwn(REPEAT_TXT, t.repeat) ? " · " + REPEAT_TXT[t.repeat] : ""}</span>` : ""}</div>
+      <div class="btns">${t.due && !t.done ? `<button class="x" data-ios="${esc(t.id)}" title="В Напоминания iPhone">⏰</button>` : ""}<button class="x" data-del="tasks:${esc(t.id)}" aria-label="Удалить">×</button></div></li>`).join("");
   emptyAfter("#tasks", ts.length, "Дел нет. Скажи, например: «напомни завтра в 9 позвонить маме» или «каждый день в 8 напоминай пить воду».");
   const ns = D.notes.slice().sort((a, b) => b.ts - a.ts);
   $("#nstat").textContent = ns.length || "";
-  $("#notes").innerHTML = ns.map(n => `<li class="row nocheck"><div class="tx">${esc(n.text)}<span class="due">${fmtDue(n.ts)}</span></div><button class="x" data-del="notes:${n.id}" aria-label="Удалить">×</button></li>`).join("");
+  $("#notes").innerHTML = ns.map(n => `<li class="row nocheck"><div class="tx">${esc(n.text)}<span class="due">${fmtDue(n.ts)}</span></div><button class="x" data-del="notes:${esc(n.id)}" aria-label="Удалить">×</button></li>`).join("");
   emptyAfter("#notes", ns.length, "Пока пусто. Скажи «запиши заметку…» или впиши выше.");
 }
 function renderKnow() {
   $("#dstat").textContent = D.docs.length || "";
-  $("#docs").innerHTML = D.docs.slice().reverse().map(d => `<li class="row nocheck"><div class="tx"><b>${esc(d.title)}</b><span class="due">${esc(d.kind)} · ${plural(d.chunks, "фрагмент", "фрагмента", "фрагментов")} · ${fmtAgo(d.ts)}${d.vec ? " · поиск по смыслу" : ""}</span></div><button class="x" data-deldoc="${d.id}" aria-label="Удалить">×</button></li>`).join("");
+  $("#docs").innerHTML = D.docs.slice().reverse().map(d => `<li class="row nocheck"><div class="tx"><b>${esc(d.title)}</b><span class="due">${esc(d.kind)} · ${plural(+d.chunks || 0, "фрагмент", "фрагмента", "фрагментов")} · ${fmtAgo(d.ts)}${d.vec ? " · поиск по смыслу" : ""}</span></div><button class="x" data-deldoc="${esc(d.id)}" aria-label="Удалить">×</button></li>`).join("");
   emptyAfter("#docs", D.docs.length, "Пока ничего. Дай мне текст, ссылку или документ — изучу.");
   const due = dueCards().length;
   $("#cstat").textContent = D.cards.length ? `${due} к повтору из ${D.cards.length}` : "";
@@ -562,25 +579,25 @@ function renderKnow() {
   $("#reviewBtn").textContent = due ? "Повторить " + plural(due, "карточку", "карточки", "карточек") : "Нечего повторять";
   $("#reviewBtn").disabled = !due;
   $("#sstat").textContent = D.skills.length || "";
-  $("#skills").innerHTML = D.skills.map(s => `<li class="row nocheck"><div class="tx"><details><summary><b>${esc(s.name)}</b> — ${esc(s.desc)}</summary><div class="small pre">${s.trigger ? "Когда: " + esc(s.trigger) + "\n" : ""}${esc(s.steps)}</div></details><span class="due">применён ${plural(s.uses || 0, "раз", "раза", "раз")}</span></div><button class="x" data-del="skills:${s.id}" aria-label="Удалить">×</button></li>`).join("");
+  $("#skills").innerHTML = D.skills.map(s => `<li class="row nocheck"><div class="tx"><details><summary><b>${esc(s.name)}</b> — ${esc(s.desc)}</summary><div class="small pre">${s.trigger ? "Когда: " + esc(s.trigger) + "\n" : ""}${esc(s.steps)}</div></details><span class="due">применён ${plural(+s.uses || 0, "раз", "раза", "раз")}</span></div><button class="x" data-del="skills:${esc(s.id)}" aria-label="Удалить">×</button></li>`).join("");
   emptyAfter("#skills", D.skills.length, "Пока нет навыков.");
   const open = openMistakes();
-  $("#mstat").textContent = open.length ? open.length + " открыто" : D.mistakes.length ? "всё исправлено" : "";
+  $("#mistat").textContent = open.length ? open.length + " открыто" : D.mistakes.length ? "всё исправлено" : "";
   $("#mistakes").innerHTML = D.mistakes.slice().sort((a, b) => (a.status === "fixed") - (b.status === "fixed") || (b.last || b.ts) - (a.last || a.ts)).map(m =>
-    `<li class="row nocheck"><div class="tx">${m.status === "fixed" ? "✅ " : "⚠️ "}${esc(m.what)}${m.fix ? `<span class="due">Исправляю: ${esc(m.fix)}</span>` : ""}<span class="due">${esc(m.src || "")} · ${fmtAgo(m.last || m.ts)}${(m.count || 1) > 1 ? " · повторялось " + plural(m.count, "раз", "раза", "раз") : ""}${m.status === "fixed" ? " · не повторялось 2 недели" : ""}</span></div><button class="x" data-del="mistakes:${m.id}" aria-label="Удалить">×</button></li>`).join("");
+    `<li class="row nocheck"><div class="tx">${m.status === "fixed" ? "✅ " : "⚠️ "}${esc(m.what)}${m.fix ? `<span class="due">Исправляю: ${esc(m.fix)}</span>` : ""}<span class="due">${esc(m.src || "")} · ${fmtAgo(m.last || m.ts)}${(m.count || 1) > 1 ? " · повторялось " + plural(+m.count || 1, "раз", "раза", "раз") : ""}${m.status === "fixed" ? " · не повторялось 2 недели" : ""}</span></div><button class="x" data-del="mistakes:${esc(m.id)}" aria-label="Удалить">×</button></li>`).join("");
   emptyAfter("#mistakes", D.mistakes.length, "Пока ничего не записано. Я замечаю свои ошибки, когда ты поправляешь меня, ставишь 👎, и раз в день сам перечитываю переписку.");
   $("#lstat").textContent = D.lessons.length || "";
-  $("#lessons").innerHTML = D.lessons.map(l => `<li class="row nocheck"><div class="tx">${esc(l.text)}</div><button class="x" data-del="lessons:${l.id}" aria-label="Удалить">×</button></li>`).join("");
+  $("#lessons").innerHTML = D.lessons.map(l => `<li class="row nocheck"><div class="tx">${esc(l.text)}</div><button class="x" data-del="lessons:${esc(l.id)}" aria-label="Удалить">×</button></li>`).join("");
   emptyAfter("#lessons", D.lessons.length, "Пока нет. Ставь 👎 под неудачными ответами — я сделаю выводы.");
 }
 function renderMem() {
   $("#cProfile").value = D.core.profile || ""; $("#cGoals").value = D.core.goals || ""; $("#cPeople").value = D.core.people || ""; $("#cPrefs").value = D.core.preferences || "";
-  $("#insights").innerHTML = D.insights.slice().reverse().map(i => `<li class="row nocheck"><div class="tx">${esc(i.text)}</div><button class="x" data-del="insights:${i.id}" aria-label="Удалить">×</button></li>`).join("");
+  $("#insights").innerHTML = D.insights.slice().reverse().map(i => `<li class="row nocheck"><div class="tx">${esc(i.text)}</div><button class="x" data-del="insights:${esc(i.id)}" aria-label="Удалить">×</button></li>`).join("");
   emptyAfter("#insights", D.insights.length, "Выводы появятся, когда я узнаю тебя получше (обновляю раз в день).");
   const facts = activeFacts();
   $("#mstat").textContent = facts.length || "";
   $("#facts").innerHTML = CATS.map(c => [c, facts.filter(f => f.cat === c).sort((a, b) => (b.imp || 5) - (a.imp || 5))]).filter(g => g[1].length)
-    .map(([c, list]) => `<li class="grp">${esc(c)}</li>` + list.map(f => `<li class="row nocheck"><div class="tx">${esc(f.text)}<span class="due">${"●".repeat(Math.round((f.imp || 5) / 2))}${"○".repeat(5 - Math.round((f.imp || 5) / 2))} · ${fmtAgo(f.ts)}</span></div><button class="x" data-forget="${f.id}" aria-label="Забыть">×</button></li>`).join("")).join("");
+    .map(([c, list]) => `<li class="grp">${esc(c)}</li>` + list.map(f => `<li class="row nocheck"><div class="tx">${esc(f.text)}<span class="due">${dots(f.imp)} · ${fmtAgo(f.ts)}</span></div><button class="x" data-forget="${esc(f.id)}" aria-label="Забыть">×</button></li>`).join("")).join("");
   emptyAfter("#facts", facts.length, "Пока ничего. Просто разговаривай со мной — я буду запоминать важное.");
   $("#diary").textContent = D.diary.text || "Пока пусто. Когда разговоров станет больше, здесь появится краткая история: о чём мы говорили и что решили.";
 }
@@ -648,7 +665,7 @@ $("#teachForm").addEventListener("submit", async e => {
       const r = await fromFile(f, progress); text = r.text; title = title || r.title; kind = r.kind || "файл"; pages = r.pages || 0; note = r.note || "";
     }
     const d = await addDoc(title || "Без названия", text, kind, { pages, onProgress: progress });
-    out.textContent = `Изучил «${d.title}»${d.pages ? ` (${d.pages} стр.)` : ""}: ${plural(d.chunks, "фрагмент", "фрагмента", "фрагментов")}${d.vec ? ", понимаю по смыслу" : ""}${d.summary ? ", конспект готов" : ""}. ${note}`;
+    out.textContent = `Изучил «${d.title}»${d.pages ? ` (${d.pages} стр.)` : ""}: ${plural(+d.chunks || 0, "фрагмент", "фрагмента", "фрагментов")}${d.vec ? ", понимаю по смыслу" : ""}${d.summary ? ", конспект готов" : ""}. ${note}`;
     $("#tTitle").value = ""; $("#tText").value = ""; $("#tUrl").value = ""; $("#tFile").value = "";
     renderKnow();
   } catch (err) { out.textContent = err.status ? explain(err) : err.message; }
@@ -688,6 +705,8 @@ function fillSettings() {
 }
 TEXT_KEYS.forEach(k => $("#" + k).addEventListener("change", e => {
   S[k] = e.target.value.trim(); saveSettings(); fillSettings();
+  // Новый ключ — новые лимиты: забываем, какие модели были исчерпаны у старого
+  if (k === "geminiKey") { D.meta.deadModels = {}; D.meta.models = null; persist(); }
   if (k === "geminiKey" && S.geminiKey) discoverGemini(true).then(fillGeminiModels).catch(err => toast(explain(err)));
   if (k === "openrouterKey" && S.openrouterKey) discoverOpenRouter(true).catch(() => {});
 }));
@@ -765,13 +784,14 @@ $("#diagBtn").onclick = async e => {
 $("#diagCopy").onclick = async () => { try { await navigator.clipboard.writeText(diagReport); toast("Отчёт скопирован — пришли его Claude, если нужна помощь.", 3000); } catch { toast(diagReport); } };
 
 /* =================== Данные =================== */
-let backupCache = "";
-async function prepBackup() { try { backupCache = JSON.stringify(await exportAll()); } catch {} }
+let backupCache = "", backupVer = -1;
+async function prepBackup() { try { const v = dataVersion(); backupCache = JSON.stringify(await exportAll()); backupVer = v; } catch {} }
 const backedUp = () => { D.meta.lastBackup = Date.now(); persist(); };
 /* Сохранить копию: «Поделиться» → Файлы/AirDrop/почта; запасной путь — буфер обмена. JSON готовится заранее,
    потому что iPhone разрешает «Поделиться» только сразу после касания. */
 async function doBackup() {
-  const json = backupCache || JSON.stringify(await exportAll());
+  // Копия — всегда свежая: если после подготовки что-то изменилось, собираем заново
+  const json = backupCache && backupVer === dataVersion() ? backupCache : JSON.stringify(await exportAll());
   prepBackup();
   const name = "dmitriy-backup-" + todayKey() + ".json";
   try {
@@ -795,8 +815,11 @@ function offerBackup() {
 }
 $("#restoreBtn").onclick = () => { $("#restoreBox").hidden = !$("#restoreBox").hidden; };
 async function restoreFrom(text) {
-  try { await importAll(JSON.parse(text)); renderLists(); renderChat(); toast("Восстановлено.", 2000); $("#restoreBox").hidden = true; ensureDocVecs().then(renderKnow); prepBackup(); }
-  catch { toast("Не получилось: копия повреждена. Данные не изменены."); }
+  try { await importAll(JSON.parse(text)); }
+  catch { toast("Не получилось: копия повреждена. Данные не изменены."); return; }
+  toast("Восстановлено.", 2000); $("#restoreBox").hidden = true;
+  try { renderLists(); renderChat(); } catch {}
+  ensureDocVecs().then(renderKnow).catch(() => {}); prepBackup();
 }
 $("#restoreGo").onclick = () => restoreFrom($("#restoreText").value);
 $("#restoreFile").onchange = async e => { const f = e.target.files[0]; if (f) restoreFrom(await f.text()); e.target.value = ""; };
@@ -816,7 +839,7 @@ $("#form").addEventListener("submit", e => {
   if (!v && !photo) { if (busy) busy.abort(); else if (V.speaking()) { V.stopSpeaking(); syncSendBtn(); } return; }
   send(v);
 });
-function setTab(t) { if (t === "set") { prepBackup(); fillSettings(); } document.body.dataset.tab = t; $$(".tabbar button").forEach(b => b.setAttribute("aria-selected", String(b.dataset.tab === t))); if (t === "chat") scrollDown(); }
+function setTab(t) { if (t === "set") { if (backupVer !== dataVersion()) setTimeout(prepBackup, 400); fillSettings(); } document.body.dataset.tab = t; $$(".tabbar button").forEach(b => b.setAttribute("aria-selected", String(b.dataset.tab === t))); if (t === "chat") scrollDown(); }
 $(".tabbar").addEventListener("click", e => { const b = e.target.closest("[data-tab]"); if (b) setTab(b.dataset.tab); });
 document.addEventListener("touchend", V.unlock, { once: true });
 document.addEventListener("click", V.unlock, { once: true });

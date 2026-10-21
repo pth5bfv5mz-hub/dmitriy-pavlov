@@ -2,7 +2,7 @@
    Gemini — самый умный (поиск Google, голос, распознавание речи, эмбеддинги), но из России только через VPN.
    Mistral и Z.ai — работают из России без VPN; для них поиск и погода сделаны инструментами. */
 import { S, D, persist } from "./store.js";
-import { sleep, todayKey } from "./util.js";
+import { sleep, todayKey, neutralize } from "./util.js";
 
 export const BRAINS = {
   gemini: { name: "Gemini", needs: "geminiKey" },
@@ -92,7 +92,8 @@ async function readSSE(res, onEvent, signal) {
    GEMINI
    ===================================================================== */
 const G = "https://generativelanguage.googleapis.com/v1beta";
-const gkey = () => encodeURIComponent(S.geminiKey.trim());
+// Ключ — в заголовке, а не в адресе: адреса оседают в журналах и истории
+export const gHeaders = (extra = {}) => ({ "x-goog-api-key": S.geminiKey.trim(), ...extra });
 // Модели с бесплатной квотой у новых ключей (октябрь 2026). Новейшие (3.x) и псевдонимы *-latest
 // дают новым ключам лимит 0, поэтому их НЕ ставим вперёд — сначала проверенно-бесплатные 2.x.
 const FREE_CHAT = ["gemini-2.5-flash", "gemini-2.0-flash"];
@@ -118,7 +119,7 @@ export async function discoverGemini(force) {
   const cached = D.meta.models;
   if (!force && cached && Date.now() - cached.at < 3 * 864e5 && cached.chat?.length) return cached;
   try {
-    const res = await fetch(`${G}/models?pageSize=1000&key=${gkey()}`);
+    const res = await fetch(`${G}/models?pageSize=1000`, { headers: gHeaders() });
     if (!res.ok) await httpError(res, "gemini");
     const j = await res.json();
     const all = (j.models || []).map(m => ({ id: m.name.replace(/^models\//, ""), methods: m.supportedGenerationMethods || [] }));
@@ -199,8 +200,8 @@ function gContents(hist, img) {
   return out;
 }
 async function gStream(model, body, onText, signal) {
-  const res = await fetch(`${G}/models/${encodeURIComponent(model)}:streamGenerateContent?alt=sse&key=${gkey()}`,
-    { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal });
+  const res = await fetch(`${G}/models/${encodeURIComponent(model)}:streamGenerateContent?alt=sse`,
+    { method: "POST", headers: gHeaders({ "Content-Type": "application/json" }), body: JSON.stringify(body), signal });
   if (!res.ok) await httpError(res, "gemini");
   let text = "", blocked = ""; const sources = [];
   await readSSE(res, ev => {
@@ -230,7 +231,10 @@ async function chatGemini({ system, hist, img, onText, signal, deep, wantSearch 
   let extra = null;
   const backup = async () => { if (!extra) extra = netContext(lastUser ? lastUser.text : "").catch(() => ({ text: "", sources: [] })); return extra; };
   // При любом отказе с поиском сразу отвечаем той же моделью без поиска, а не долбим квоту.
-  const toolSets = needSearch ? [[{ google_search: {} }, { url_context: {} }], undefined] : [undefined];
+  // Чтение страниц (url_context) — только когда Сумрак сам прислал ссылку: иначе подброшенная в поиске
+  // инструкция могла бы заставить «открыть» чужой адрес с его данными в строке запроса.
+  const userLink = /https?:\/\//i.test(lastUser ? lastUser.text : "");
+  const toolSets = needSearch ? [[{ google_search: {} }, ...(userLink ? [{ url_context: {} }] : [])], undefined] : [undefined];
   for (const model of await gModels(deep ? "deep" : "chat")) {
     const sets = isGemma(model) ? [undefined] : toolSets;   // у Gemma нет поиска Google
     for (let ti = 0; ti < sets.length; ti++) {
@@ -271,8 +275,8 @@ async function plainGemini(system, prompt, { json } = {}) {
   for (const model of (await gModels("bg")).slice(0, 6)) {
     try {
       const g = isGemma(model);
-      const res = await fetch(`${G}/models/${encodeURIComponent(model)}:generateContent?key=${gkey()}`, {
-        method: "POST", headers: { "Content-Type": "application/json" },
+      const res = await fetch(`${G}/models/${encodeURIComponent(model)}:generateContent`, {
+        method: "POST", headers: gHeaders({ "Content-Type": "application/json" }),
         body: JSON.stringify(g ? { contents: [{ role: "user", parts: [{ text: system + "\n\n" + prompt }] }], generationConfig: { temperature: 0.2 } }
           : { system_instruction: { parts: [{ text: system }] }, contents: [{ role: "user", parts: [{ text: prompt }] }],
           generationConfig: { temperature: 0.2, ...(json ? { responseMimeType: "application/json" } : {}) } }),
@@ -292,8 +296,8 @@ export async function embedGemini(texts, task) {
       const out = [];
       for (let i = 0; i < texts.length; i += 90) {
         const batch = texts.slice(i, i + 90);
-        const res = await fetch(`${G}/models/${model}:batchEmbedContents?key=${gkey()}`, {
-          method: "POST", headers: { "Content-Type": "application/json" },
+        const res = await fetch(`${G}/models/${model}:batchEmbedContents`, {
+          method: "POST", headers: gHeaders({ "Content-Type": "application/json" }),
           body: JSON.stringify({ requests: batch.map(t => ({ model: "models/" + model, content: { parts: [{ text: t.slice(0, 7000) }] }, taskType: task, outputDimensionality: 768 })) }),
         });
         if (!res.ok) await httpError(res, "gemini");
@@ -312,8 +316,8 @@ async function transcribeGemini(b64, mime) {
   for (const model of [...await gModels("lite"), ...await gModels("chat")].slice(0, 4)) {
     for (const m of [mime, "audio/aac", "audio/mp4"].filter((x, i, a) => x && a.indexOf(x) === i)) {
       try {
-        const res = await fetch(`${G}/models/${encodeURIComponent(model)}:generateContent?key=${gkey()}`, {
-          method: "POST", headers: { "Content-Type": "application/json" },
+        const res = await fetch(`${G}/models/${encodeURIComponent(model)}:generateContent`, {
+          method: "POST", headers: gHeaders({ "Content-Type": "application/json" }),
           body: JSON.stringify({ contents: [{ role: "user", parts: [
             { text: "Распознай речь на записи дословно. Язык обычно русский. Верни только распознанный текст без кавычек и пояснений. Если речи нет — верни пустую строку." },
             { inline_data: { mime_type: m, data: b64 } }] }], generationConfig: { temperature: 0, ...(/^gemini-2\.5-flash/.test(model) ? { thinkingConfig: { thinkingBudget: 0 } } : {}) } }),
@@ -333,8 +337,8 @@ export async function ttsGemini(text, voice) {
   let last;
   for (const model of (await gModels("tts")).slice(0, 3)) {
     try {
-      const res = await fetch(`${G}/models/${encodeURIComponent(model)}:generateContent?key=${gkey()}`, {
-        method: "POST", headers: { "Content-Type": "application/json" },
+      const res = await fetch(`${G}/models/${encodeURIComponent(model)}:generateContent`, {
+        method: "POST", headers: gHeaders({ "Content-Type": "application/json" }),
         body: JSON.stringify({ contents: [{ role: "user", parts: [{ text }] }],
           generationConfig: { responseModalities: ["AUDIO"], speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: voice || "Charon" } } } } }),
       });
@@ -420,7 +424,7 @@ async function netContext(q) {
     const r = await toolWebSearch(q.replace(/[?!.]+$/, "").slice(0, 200), sources);
     if (typeof r === "object") parts.push(JSON.stringify(r).slice(0, 7000));
   }
-  return { text: parts.join("\n\n"), sources };
+  return { text: neutralize(parts.join("\n\n")), sources };
 }
 export async function readUrl(url) {
   const r = await fetch("https://r.jina.ai/" + url, { headers: { "Accept": "text/plain" } });
@@ -433,11 +437,16 @@ async function toolWeather(city) {
   const w = await getJSON(`https://api.open-meteo.com/v1/forecast?latitude=${p.latitude}&longitude=${p.longitude}&current=temperature_2m,apparent_temperature,weather_code,wind_speed_10m,relative_humidity_2m&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max,weather_code&timezone=auto&forecast_days=3`);
   return { place: `${p.name}${p.country ? ", " + p.country : ""}`, current: w.current, daily: w.daily, note: "weather_code по WMO: 0 ясно, 1-3 облачно, 45-48 туман, 51-67 дождь, 71-77 снег, 80-82 ливни, 95-99 гроза" };
 }
-async function runTool(call, sources) {
+async function runTool(call, sources, allowed = new Set()) {
   let a = {}; try { a = JSON.parse(call.function.arguments || "{}"); } catch {}
   try {
     if (call.function.name === "get_weather") { sources.push({ url: "https://open-meteo.com", title: "Open-Meteo (погода)" }); return await toolWeather(String(a.city || "")); }
-    if (call.function.name === "read_url") { const t = await readUrl(String(a.url || "")); sources.push({ url: String(a.url), title: "" }); return t; }
+    if (call.function.name === "read_url") {
+      const url = String(a.url || "");
+      // Открываем только ссылки от Сумрака или из найденного поиском — не те, что «подсказала» страница
+      if (![...allowed, ...sources.map(x => x.url)].some(u => u && (url === u || url.startsWith(u.replace(/[#?].*$/, ""))))) return "Эту ссылку открыть нельзя: открываю только ссылки из сообщения Сумрака или из результатов поиска.";
+      const t = await readUrl(url); sources.push({ url, title: "" }); return t;
+    }
     return await toolWebSearch(String(a.query || ""), sources);
   } catch (e) { return "Ошибка инструмента: " + e.message; }
 }
@@ -464,6 +473,8 @@ async function chatCompat(brain, { system, hist, img, onText, onStatus, signal }
   const messages = [{ role: "system", content: system }, ...hist.map(h => ({ role: h.role, content: h.text }))];
   if (img) { const last = messages[messages.length - 1]; last.content = [{ type: "text", text: last.content }, { type: "image_url", image_url: { url: img.url } }]; }
   const sources = [];
+  const lastUserText = [...hist].reverse().find(h => h.role === "user")?.text || "";
+  const allowed = new Set(lastUserText.match(/https?:\/\/[^\s<>"')]+/g) || []);
   // Запасные модели того же сервиса: у каждой своя очередь и свой лимит
   const models = [...new Set([img ? c.vision : c.model, ...(img ? [] : c.spare || [])])].filter(Boolean).slice(0, 3);
   let mi = 0;
@@ -484,7 +495,7 @@ async function chatCompat(brain, { system, hist, img, onText, onStatus, signal }
     if (m.tool_calls && m.tool_calls.length) {
       messages.push({ role: "assistant", content: m.content || "", tool_calls: m.tool_calls });
       (onStatus || onText)(m.tool_calls.some(t => t.function.name === "web_search") ? "Ищу в интернете…" : "Смотрю…");
-      for (const call of m.tool_calls) messages.push({ role: "tool", tool_call_id: call.id, name: call.function.name, content: JSON.stringify(await runTool(call, sources)).slice(0, 14000) });
+      for (const call of m.tool_calls) messages.push({ role: "tool", tool_call_id: call.id, name: call.function.name, content: neutralize(JSON.stringify(await runTool(call, sources, allowed))).slice(0, 14000) });
       continue;
     }
     const text = typeof m.content === "string" ? m.content : (m.content || []).map(p => p.text || "").join("");

@@ -108,7 +108,7 @@
       <p class="small">Скажи: «Научись: когда я прошу план тренировки — …». Я перескажу, как понял, и сохраню после твоего «да».</p>
       <ul class="list" id="skills"></ul>
 
-      <h2>Мои недочёты <span id="mstat"></span></h2>
+      <h2>Мои недочёты <span id="mistat"></span></h2>
       <p class="small">Самоанализ: ошибки, которые я заметил сам, по твоим поправкам и 👎, и при ежедневной самопроверке переписки. Спроси меня «в чём твои недочёты?» — расскажу по этому списку.</p>
       <div class="row-btns"><button type="button" id="selfReviewBtn">Проверить себя сейчас</button></div>
       <ul class="list" id="mistakes"></ul>
@@ -267,15 +267,15 @@
 </div>
 
 <!-- Голосовой разговор -->
-<div class="talk" id="talkView" hidden role="dialog" aria-label="Голосовой разговор">
+<div class="talk" id="talkView" hidden role="dialog" aria-modal="true" aria-label="Голосовой разговор">
   <div class="talk-top"><span id="talkBrain"></span><button type="button" class="x big" id="talkClose" aria-label="Завершить разговор">×</button></div>
   <button type="button" class="orb" id="orb" aria-label="Говорить или прервать"><span class="orb-ring" id="orbRing"></span></button>
-  <p class="talk-state" id="talkState">Нажми и говори</p>
+  <p class="talk-state" id="talkState" role="status" aria-live="polite">Нажми и говори</p>
   <p class="talk-text" id="talkText"></p>
   <p class="small talk-hint">Нажми на круг, чтобы перебить или заговорить. Скажи «стоп» или «хватит», чтобы закончить.</p>
 </div>
 
-<div class="toast" id="toast" hidden><span id="toastText"></span><button type="button" id="toastOk">Понял</button></div>
+<div class="toast" id="toast" hidden role="alert"><span id="toastText"></span><button type="button" id="toastOk">Понял</button></div>
 <script type="module" src="js/main.js"></script>
 </body>
 </html>

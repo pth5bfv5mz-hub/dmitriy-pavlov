@@ -2,9 +2,9 @@
    Большие PDF и Word (сотни страниц) читаются прямо на телефоне — без нейросети и без лимитов.
    Текст режется на фрагменты; поиск — по словам (всегда) и по смыслу (векторы Gemini, если доступен),
    результаты объединяются (reciprocal rank fusion). Индекс строится один раз и держится в памяти. */
-import { D, S, persist, idbPut, idbAll, idbDelDoc } from "./store.js";
+import { D, S, persist, idbPut, idbAll, idbDelDoc, idbDocChunks } from "./store.js";
 import { uid, terms, cosine } from "./util.js";
-import { embed, canEmbed, readUrl, plain, configured, isBlocked, anyBrain } from "./brains.js";
+import { embed, canEmbed, readUrl, plain, configured, isBlocked, anyBrain, gHeaders } from "./brains.js";
 
 function chunkText(text, size = 1100, overlap = 180) {
   const paras = text.replace(/\r/g, "").split(/\n{2,}/).map(p => p.trim()).filter(Boolean);
@@ -28,7 +28,9 @@ let index = null;
 const signature = () => D.docs.map(d => d.id + ":" + (d.vec ? 1 : 0)).join(",");
 async function getIndex() {
   if (index && index.sig === signature()) return index;
-  const chunks = await idbAll("chunks");
+  // Только фрагменты документов, которые есть в списке (остатки удалённых или прерванных — не в счёт)
+  const ids = new Set(D.docs.map(d => d.id));
+  const chunks = (await idbAll("chunks")).filter(c => ids.has(c.docId));
   const tokens = chunks.map(c => terms(c.title + " " + c.text));
   const df = new Map(); tokens.forEach(t => new Set(t).forEach(w => df.set(w, (df.get(w) || 0) + 1)));
   const tf = tokens.map(t => { const m = new Map(); t.forEach(w => m.set(w, (m.get(w) || 0) + 1)); return m; });
@@ -48,11 +50,14 @@ export async function addDoc(title, text, kind = "текст", { pages = 0, onPr
   const parts = chunkText(text);
   const chunks = parts.map((t, i) => ({ id: docId + ":" + i, docId, title, n: i, text: t }));
   onProgress && onProgress(`Сохраняю ${chunks.length} фрагментов…`);
-  for (let i = 0; i < chunks.length; i += 200) await idbPut("chunks", chunks.slice(i, i + 200));
+  try { for (let i = 0; i < chunks.length; i += 200) await idbPut("chunks", chunks.slice(i, i + 200)); }
+  catch (e) { await idbDelDoc(docId).catch(() => {}); throw new Error("Не хватило места в памяти телефона для этого материала."); }
   const doc = { id: docId, title: String(title).slice(0, 120), kind, ts: Date.now(), chunks: chunks.length, chars: text.length, pages, vec: false, preview: text.slice(0, 200), summary: "" };
   D.docs.push(doc); persist(); invalidate();
   if (canEmbed()) {
+    embedding.add(docId);
     try { await embedChunks(doc, chunks, onProgress); } catch {}   // не вышло — досчитаем позже
+    finally { embedding.delete(docId); }
   }
   if (anyBrain()) {
     onProgress && onProgress("Делаю конспект…");
@@ -68,21 +73,25 @@ async function embedChunks(doc, chunks, onProgress) {
     const part = chunks.slice(i, i + step);
     const r = await embed(part.map(c => `${doc.title}\n${c.text}`), "RETRIEVAL_DOCUMENT");
     if (!r) return;
+    if (!D.docs.some(d => d.id === doc.id)) return;   // материал удалили, пока считали
     await idbPut("vecs", part.map((c, j) => ({ id: c.id, v: r.vecs[j], m: r.model })));
   }
   doc.vec = true; persist();
 }
+const embedding = new Set();   // материалы, для которых векторы считаются прямо сейчас (не считать дважды)
 export async function removeDoc(id) { await idbDelDoc(id); D.docs = D.docs.filter(d => d.id !== id); persist(); invalidate(); }
 /* Досчитать векторы для документов, добавленных без Gemini или прерванных лимитом. */
 export async function ensureDocVecs() {
   if (!canEmbed()) return;
-  for (const d of D.docs.filter(d => !d.vec)) {
+  for (const d of D.docs.filter(d => !d.vec && !embedding.has(d.id))) {
+    embedding.add(d.id);
     try {
-      const chunks = (await idbAll("chunks")).filter(c => c.docId === d.id).sort((a, b) => a.n - b.n);
+      const chunks = (await idbDocChunks(d.id)).sort((a, b) => a.n - b.n);
       if (!chunks.length) continue;   // текст материала утерян — нечего считать
       await embedChunks(d, chunks);
       invalidate();
     } catch { return; }
+    finally { embedding.delete(d.id); }
   }
 }
 
@@ -172,6 +181,10 @@ async function readPdf(file, onProgress) {
   const lib = window.pdfjsLib;
   lib.GlobalWorkerOptions.workerSrc = "lib/pdf.worker.min.js";
   const pdf = await lib.getDocument({ data: new Uint8Array(await file.arrayBuffer()) }).promise;
+  try { return await readPdfPages(pdf, file, onProgress); }
+  finally { try { pdf.destroy(); } catch {} }   // освобождаем память документа (на iPhone её мало)
+}
+async function readPdfPages(pdf, file, onProgress) {
   const n = pdf.numPages; const pages = [];
   for (let i = 1; i <= n; i++) {
     if (i % 5 === 1 || i === n) onProgress(`Читаю страницы: ${i} из ${n}…`);
@@ -206,15 +219,17 @@ async function renderPage(pdf, i) {
   const c = document.createElement("canvas"); c.width = vp.width; c.height = vp.height;
   await page.render({ canvasContext: c.getContext("2d"), viewport: vp }).promise;
   page.cleanup();
-  return c.toDataURL("image/jpeg", 0.7).split(",")[1];
+  const b64 = c.toDataURL("image/jpeg", 0.7).split(",")[1];
+  c.width = c.height = 0;   // iPhone ограничивает общую память холстов — освобождаем сразу
+  return b64;
 }
 async function geminiExtract(parts, withUrl) {
   const models = [...((D.meta.models && D.meta.models.lite) || []), ...((D.meta.models && D.meta.models.chat) || []), "gemini-flash-lite-latest", "gemini-flash-latest"];
   let last;
   for (const model of [...new Set(models)].slice(0, 5)) {
     try {
-      const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(S.geminiKey.trim())}`, {
-        method: "POST", headers: { "Content-Type": "application/json" },
+      const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
+        method: "POST", headers: gHeaders({ "Content-Type": "application/json" }),
         body: JSON.stringify({ contents: [{ role: "user", parts }], ...(withUrl ? { tools: [{ url_context: {} }] } : {}), generationConfig: { temperature: 0 } }),
       });
       if (!res.ok) { let m = ""; try { m = (await res.json()).error.message; } catch {} throw Object.assign(new Error(m || "HTTP " + res.status), { status: res.status }); }

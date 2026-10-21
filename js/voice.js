@@ -68,7 +68,8 @@ export function record({ onLevel, onSpeech, onStart, maxMs = 60000, silenceMs = 
     catch (e) { if (current === pending) current = null; audioSession("playback"); return reject(Object.assign(new Error(e && e.name === "NotAllowedError" ? "mic-denied" : "mic-failed"), { cause: e })); }
     if (pending.cancelled || current !== pending) { stream.getTracks().forEach(t => t.stop()); audioSession("playback"); return resolve(null); }
     const mime = MIME.find(m => { try { return MediaRecorder.isTypeSupported(m); } catch { return false; } }) || "";
-    let mr; try { mr = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined); } catch (e) { stream.getTracks().forEach(t => t.stop()); return reject(e); }
+    let mr; try { mr = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined); }
+    catch (e) { stream.getTracks().forEach(t => t.stop()); if (current === pending) current = null; audioSession("playback"); return reject(e); }
     const chunks = []; let cancelled = false, spoke = false, done = false;
     let src, an, timer, raf;
     mr.ondataavailable = e => { if (e.data && e.data.size) chunks.push(e.data); };

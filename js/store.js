@@ -55,6 +55,9 @@ export const D = {
   docs: load("docs", []),         // {id, title, kind, ts, chunks, chars}
   meta: load("meta", { lastTidy: 0, lastReflect: 0, lastBrief: "", impSinceReflect: 0, tempChat: false, models: null }),
 };
+// Инкогнито живёт только до закрытия приложения: на диске его разговоров нет, флаг сбрасываем
+D.meta.tempChat = false;
+D.msgs = D.msgs.filter(m => !m.temp);
 // Старые факты без новых полей
 D.facts.forEach(f => { f.cat = f.cat || "другое"; f.imp = f.imp || 5; f.status = f.status || "active"; f.used = f.used || f.ts || Date.now(); });
 
@@ -62,17 +65,30 @@ const KEYS = ["msgs", "facts", "core", "tasks", "notes", "diary", "skills", "les
 let onQuota = () => {};
 export const setQuotaHandler = f => { onQuota = f; };
 /* Сохранить всё. Если память телефона переполнена — ужимаем переписку и пробуем ещё раз. */
+let ver = 0;
+export const dataVersion = () => ver;   // меняется при каждом сохранении — по нему видно, что резервная копия устарела
 export function persist() {
-  const write = n => KEYS.reduce((ok, k) => save(k, k === "msgs" ? D.msgs.slice(-n) : D[k]) && ok, true);
-  if (write(500)) return true;
-  D.msgs = D.msgs.slice(-150).map(m => { const c = { ...m }; delete c.sources; return c; });
-  const ok = write(150);
+  ver++;
+  // Сообщения инкогнито на диск не пишем
+  const val = (k, n) => k === "msgs" ? D.msgs.filter(m => !m.temp).slice(-n) : k === "meta" ? { ...D.meta, tempChat: false } : D[k];
+  const write = n => KEYS.filter(k => !save(k, val(k, n)));
+  let failed = write(500);
+  if (!failed.length) return true;
+  // Место кончилось. Сокращаем переписку, только если она правда занимает заметную долю, —
+  // иначе резать её бессмысленно (место занимают материалы или факты).
+  const size = k => { try { return JSON.stringify(D[k]).length; } catch { return 0; } };
+  const total = KEYS.reduce((t, k) => t + size(k), 0);
+  if (size("msgs") > total * 0.25) {
+    D.msgs = D.msgs.slice(-150).map(m => { const c = { ...m }; delete c.sources; return c; });
+    failed = write(150);
+  }
+  const ok = !failed.length;
   try { onQuota(ok); } catch {}
   return ok;
 }
 export async function exportAll(withMsgs = true) {
   const o = { app: "dmitriy-pavlov", v: 3, at: new Date().toISOString() };
-  KEYS.forEach(k => { if (k !== "msgs" || withMsgs) o[k] = D[k]; });
+  KEYS.forEach(k => { if (k !== "msgs" || withMsgs) o[k] = k === "msgs" ? D.msgs.filter(m => !m.temp) : k === "meta" ? { ...D.meta, tempChat: false } : D[k]; });
   try { o.chunks = await idbAll("chunks"); } catch { o.chunks = []; }   // тексты базы знаний
   return o;
 }
@@ -91,15 +107,33 @@ export async function importAll(o) {
       next[k] = { ...D[k], ...o[k] };
     }
   }
-  if (next.facts) next.facts.forEach(f => { f.text = String(f.text || ""); f.cat = f.cat || "другое"; f.imp = f.imp || 5; f.status = f.status || "active"; f.used = f.used || f.ts || Date.now(); });
+  // Копия могла быть изменена кем-то: приводим поля к ожидаемым типам — id только из букв и цифр,
+  // числа — числами в разумных пределах. Иначе подделанная копия могла бы вставить код в страницу.
+  for (const k of Object.keys(next)) if (Array.isArray(next[k])) next[k] = next[k].map(cleanItem).filter(Boolean);
+  if (next.facts) next.facts.forEach(f => { f.text = String(f.text || ""); f.cat = String(f.cat || "другое"); f.imp = clampNum(f.imp, 1, 10, 5); f.status = f.status === "old" ? "old" : "active"; f.used = f.used || f.ts || Date.now(); });
   if (next.facts) next.facts = next.facts.filter(f => f.text && f.id);
-  const chunks = Array.isArray(o.chunks) ? o.chunks.filter(c => isObj(c) && c.id && c.docId && typeof c.text === "string") : null;
+  if (next.tasks) next.tasks.forEach(t => { if (!Object.hasOwn(REPEAT_KEYS, t.repeat)) t.repeat = null; });
+  const chunks = Array.isArray(o.chunks) ? o.chunks.filter(c => isObj(c) && c.id && c.docId && typeof c.text === "string").map(c => ({ id: safeId(c.id), docId: safeId(c.docId), n: clampNum(c.n, 0, 1e7, 0), title: String(c.title || ""), text: c.text })) : null;
+  if (next.docs && next.docs.length && !(chunks && chunks.length)) throw new Error("bad: docs without text");
   Object.assign(D, next);
-  if (chunks && chunks.length) {
-    await idbPut("chunks", chunks);
+  if (next.docs) {   // база знаний заменяется целиком — старые фрагменты и векторы убираем
+    try { await idbClear("chunks"); await idbClear("vecs"); } catch {}
+    if (chunks && chunks.length) for (let i = 0; i < chunks.length; i += 500) await idbPut("chunks", chunks.slice(i, i + 500));
     D.docs.forEach(d => { d.vec = false; });   // векторы пересчитаем
   }
   persist();
+}
+const REPEAT_KEYS = { daily: 1, weekdays: 1, weekly: 1, monthly: 1, yearly: 1 };
+const safeId = v => { const s = String(v ?? ""); return /^[\w:.-]{1,80}$/.test(s) ? s : "x" + Math.random().toString(36).slice(2, 12); };
+const clampNum = (v, lo, hi, def) => { const n = Number(v); return Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : def; };
+const NUMS = { ts: [0, 4e12], due: [0, 4e12], used: [0, 4e12], last: [0, 4e12], notifiedAt: [0, 4e12], validTo: [0, 4e12], fixedAt: [0, 4e12],
+  imp: [1, 10], chunks: [0, 1e7], chars: [0, 1e10], pages: [0, 1e6], uses: [0, 1e7], count: [0, 1e7], ivl: [0, 1e5], ease: [1, 5], reps: [0, 1e6], rating: [-1, 1] };
+function cleanItem(x) {
+  if (!isObj(x)) return null;
+  const y = { ...x };
+  if ("id" in y) y.id = safeId(y.id);
+  for (const [k, [lo, hi]] of Object.entries(NUMS)) if (k in y && y[k] !== null) y[k] = clampNum(y[k], lo, hi, k === "imp" ? 5 : 0);
+  return y;
 }
 
 /* ---------- IndexedDB: куски документов и векторы ---------- */
@@ -136,8 +170,11 @@ export const idbAll = store => tx(store, "readonly", st => st.getAll());
 export const idbDel = (store, ids) => tx(store, "readwrite", st => { arrOf(ids).forEach(i => st.delete(i)); });
 export const idbClear = store => tx(store, "readwrite", st => st.clear());
 const arrOf = x => Array.isArray(x) ? x : [x];
+/* Записи с ключами по префиксу (например, векторы фактов «f:…») — без чтения векторов документов. */
+export const idbPrefix = (store, p, keysOnly) => tx(store, "readonly", st => { const r = IDBKeyRange.bound(p, p + "\uffff"); return keysOnly ? st.getAllKeys(r) : st.getAll(r); });
+/* Фрагменты одного материала — по индексу, без чтения всей базы. */
+export const idbDocChunks = docId => tx("chunks", "readonly", st => st.index("doc").getAll(docId));
 export async function idbDelDoc(docId) {
-  const chunks = await idbAll("chunks");
-  const ids = chunks.filter(c => c.docId === docId).map(c => c.id);
+  const ids = (await idbDocChunks(docId)).map(c => c.id);
   if (ids.length) { await idbDel("chunks", ids); await idbDel("vecs", ids); }
 }

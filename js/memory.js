@@ -3,8 +3,8 @@
    - Факты: важность 1–10, тема, свежесть. В контекст попадают самые нужные (важность + свежесть + близость к теме).
    - Устаревшие факты не стираются, а помечаются «устарело» — так не теряется история.
    - Навыки («научись»), уроки (из поправок и оценок), выводы (рефлексия раз в день), дневник разговоров. */
-import { D, persist, idbPut, idbAll, idbDel } from "./store.js";
-import { uid, arr, terms, cosine, parseLocal, REPEAT_TXT, isoLocal, todayKey, parseJSON } from "./util.js";
+import { D, persist, idbPut, idbAll, idbDel, idbPrefix } from "./store.js";
+import { neutralize, uid, arr, terms, cosine, parseLocal, REPEAT_TXT, isoLocal, todayKey, parseJSON } from "./util.js";
 import { plain, embed, canEmbed } from "./brains.js";
 
 export const CATS = ["личное", "люди", "работа", "учёба", "здоровье", "деньги", "цели", "предпочтения", "другое"];
@@ -23,7 +23,7 @@ export async function relevantFacts(query, limit = 45) {
       if (qVecCache.q !== query) { const r = await embed([query], "RETRIEVAL_QUERY"); qVecCache = { q: query, v: r && r.vecs[0], m: r && r.model }; }
       qv = qVecCache.v;
       // сравниваем только векторы одной модели — векторы разных моделей несовместимы
-      const stored = await idbAll("vecs"); vecs = new Map(stored.filter(v => v.id.startsWith("f:") && (!v.m || v.m === qVecCache.m)).map(v => [v.id.slice(2), v.v]));
+      const stored = await idbPrefix("vecs", "f:"); vecs = new Map(stored.filter(v => (!v.m || v.m === qVecCache.m)).map(v => [v.id.slice(2), v.v]));
     } catch { vecs = null; }
   }
   const now = Date.now();
@@ -47,7 +47,7 @@ async function embedFacts(list) {
 export async function ensureFactVecs() {
   if (!canEmbed()) return;
   try {
-    const have = new Set((await idbAll("vecs")).map(v => v.id));
+    const have = new Set(await idbPrefix("vecs", "f:", true));
     const miss = activeFacts().filter(f => !have.has("f:" + f.id)).slice(0, 200);
     await embedFacts(miss);
   } catch {}
@@ -81,6 +81,14 @@ export function extractActions(text) {
 // Навыки и уроки — только по явным словам Сумрака: просьба научиться, поправка или подтверждение «да».
 const TEACH_RE = /научись|научи(ть)?\s|запомни,?\s+как|навык|правил[оа]|впредь|в следующий раз|не так(?=[\s,.!?]|$)|неправильн|ошиб|поправ|исправь|никогда не|всегда (делай|отвечай|пиши|говори)|делай так/i;
 const CONFIRM_RE = /^\s*(да|ага|угу|верно|сохран\S*|подтверждаю|ок|окей|давай|точно)(?=[\s,.!?]|$)/i;
+/* Защита от «подброшенных» команд (prompt injection): текст со страницы или из документа может попросить
+   нейросеть удалить данные или вписать себе правило. Поэтому разрушительные и «обучающие» действия
+   применяем, только если этого хотел сам Сумрак, — по словам его сообщения, — и понемногу за раз. */
+const DEL_INTENT_RE = /удал|убер|убра|сотр|стер|отмен|не нужн|забудь|забыть|забуд|очист|выкин|снес|вычеркн/i;
+const DONE_INTENT_RE = /сделал|сделано|готово|выполн|закр(ой|ыл|ыть)|отмет|уже\s|купил|забрал|позвонил|сходил|отправил|оплатил|закончил|решил/i;
+const FEEDBACK_RE = /нет[,.!\s]|^нет$|не то|не так|не понял|опять|снова ты|я же|зачем ты|почему ты|не надо|ерунд|чушь|бред|плохо|неверн|неправ|ошиб|врёшь|врешь|выдум|не правда|неправда|поправ|исправ|впредь|в следующий раз|запомни|научи/i;
+const ALL_RE = /\b(все|всё|весь|целиком|список)\b/i;
+const capList = (list, userText) => list.slice(0, ALL_RE.test(userText || "") ? 50 : 2);
 const real = t => !!t && !/^\s*(\.{2,}|…|-|—)?\s*$/.test(t) && !/^\.\.\.|^…$/.test(t.trim());   // не заглушка «...» из образца
 /* userText — последнее сообщение Сумрака. Навыки и уроки создаются только по его словам,
    а не из найденных в интернете страниц (защита от «подброшенных» инструкций). */
@@ -89,7 +97,8 @@ export function applyActions(act, userText, { temp } = {}) {
   if (!act || typeof act !== "object") return out;
   const now = Date.now();
   if (!temp) {
-    const forget = arr(act.forget).map(String);
+    // Забывать факты можно, когда Сумрак сказал «забудь» или факт изменился (не больше двух за раз)
+    const forget = capList(arr(act.forget).map(String), DEL_INTENT_RE.test(userText || "") ? userText : "");
     D.facts.forEach(f => { if (forget.includes(f.id) && f.status !== "old") { f.status = "old"; f.validTo = now; } });
     const fresh = [];
     arr(act.remember).forEach(r => {
@@ -100,33 +109,41 @@ export function applyActions(act, userText, { temp } = {}) {
       D.meta.impSinceReflect = (D.meta.impSinceReflect || 0) + f.imp;
     });
     embedFacts(fresh);
-    if (act.core && typeof act.core === "object") Object.keys(D.core).forEach(k => { if (typeof act.core[k] === "string" && real(act.core[k].trim())) D.core[k] = act.core[k].trim().slice(0, 1200); });
+    if (act.core && typeof act.core === "object" && /профил/i.test(userText || "")) Object.keys(D.core).forEach(k => { if (typeof act.core[k] === "string" && real(act.core[k].trim())) D.core[k] = act.core[k].trim().slice(0, 1200); });
   }
   arr(act.tasks).forEach(t => {
     const text = String(typeof t === "string" ? t : t && t.text || "").trim(); if (!real(text)) return;
     const sec = t && +t.in_sec;
     const due = sec > 0 && sec < 366 * 86400 ? now + Math.round(sec * 1000) : t && t.due ? parseLocal(t.due) : null;
-    const task = { id: uid(), text, due, repeat: due && REPEAT_TXT[t.repeat] ? t.repeat : null, done: false, notified: false, ts: now };
+    const task = { id: uid(), text, due, repeat: due && Object.hasOwn(REPEAT_TXT, t.repeat) ? t.repeat : null, done: false, notified: false, ts: now };
     D.tasks.push(task); out.newTasks.push(task);
   });
   arr(act.update_tasks).forEach(u => {
     const t = u && D.tasks.find(x => x.id === String(u.id)); if (!t) return;
     if (u.text) t.text = String(u.text);
     if (u.due !== undefined) { t.due = u.due ? parseLocal(u.due) : null; t.notified = false; }
-    if (u.repeat !== undefined) t.repeat = REPEAT_TXT[u.repeat] ? u.repeat : null;
+    if (u.repeat !== undefined) t.repeat = Object.hasOwn(REPEAT_TXT, u.repeat) ? u.repeat : null;
     out.newTasks.push(t);
   });
-  const done = arr(act.done).map(String); D.tasks.forEach(t => { if (done.includes(t.id)) t.done = true; });
-  const delT = arr(act.delete_tasks).map(String); D.tasks = D.tasks.filter(t => !delT.includes(t.id));
+  const delIntent = DEL_INTENT_RE.test(userText || "");
+  const done = DONE_INTENT_RE.test(userText || "") || delIntent ? capList(arr(act.done).map(String), userText) : [];
+  D.tasks.forEach(t => { if (done.includes(t.id)) t.done = true; });
+  const delT = delIntent ? capList(arr(act.delete_tasks).map(String), userText) : [];
+  D.tasks = D.tasks.filter(t => !delT.includes(t.id));
   arr(act.notes).forEach(t => { t = String(typeof t === "string" ? t : t && t.text || "").trim(); if (real(t)) D.notes.push({ id: uid(), text: t, ts: now }); });
-  const delN = arr(act.delete_notes).map(String); D.notes = D.notes.filter(n => !delN.includes(n.id));
-  const taught = !temp && (TEACH_RE.test(userText || "") || CONFIRM_RE.test(userText || ""));
-  if (!temp) arr(act.mistakes).forEach(m => {
+  const delN = delIntent ? capList(arr(act.delete_notes).map(String), userText) : [];
+  D.notes = D.notes.filter(n => !delN.includes(n.id));
+  // Навык — по «научись…», или по «да» в ответ на вопрос Дмитрия «Сохранить?»
+  const prevAi = [...D.msgs].reverse().find(m => m.role === "ai");
+  const taught = !temp && (TEACH_RE.test(userText || "") || (CONFIRM_RE.test(userText || "") && /сохранить\s*\?|сохраняю\s*\?|запомнить так\s*\?/i.test(prevAi ? prevAi.text : "")));
+  // Недочёты и уроки — только в ответ на поправку или недовольство Сумрака
+  const feedback = !temp && (FEEDBACK_RE.test(userText || "") || TEACH_RE.test(userText || ""));
+  if (feedback) arr(act.mistakes).slice(0, 2).forEach(m => {
     const r = m && addMistake({ what: typeof m === "string" ? m : m.what, why: m.why, fix: m.fix, q: userText, src: "сам заметил в разговоре" });
     if (r) out.learned.push("свой недочёт");
   });
   // Уроки — всегда, когда модель их вывела (раньше терялись, если в поправке не было слов «научись», «запомни»…)
-  if (!temp) arr(act.lessons).forEach(l => {
+  if (feedback) arr(act.lessons).slice(0, 2).forEach(l => {
     const text = String(typeof l === "string" ? l : l && l.text || "").trim();
     if (real(text) && !D.lessons.some(x => x.text === text || similar(x.text, text) >= 0.75)) { D.lessons.push({ id: uid(), text: text.slice(0, 400), ts: now }); D.lessons = D.lessons.slice(-60); out.learned.push("урок"); }
   });
@@ -139,7 +156,7 @@ export function applyActions(act, userText, { temp } = {}) {
       out.learned.push("навык «" + rec.name + "»");
     });
   }
-  arr(act.forget_skills).map(String).forEach(id => { D.skills = D.skills.filter(s => s.id !== id); });
+  if (delIntent && /навык|умени/i.test(userText || "")) capList(arr(act.forget_skills).map(String), userText).forEach(id => { D.skills = D.skills.filter(s => s.id !== id); });
   arr(act.used_skills).map(String).forEach(id => { const s = D.skills.find(x => x.id === id); if (s) s.uses = (s.uses || 0) + 1; });
   arr(act.cards).forEach(c => {
     if (!c || !real(String(c.q || "")) || !real(String(c.a || ""))) return;

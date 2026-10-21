@@ -15,6 +15,9 @@ export const DAYS = ["воскресенье", "понедельник", "вто
 export const DAYS_SHORT = ["вс", "пн", "вт", "ср", "чт", "пт", "сб"];
 export const MONTHS = ["января", "февраля", "марта", "апреля", "мая", "июня", "июля", "августа", "сентября", "октября", "ноября", "декабря"];
 export const REPEAT_TXT = { daily: "каждый день", weekdays: "по будням", weekly: "каждую неделю", monthly: "каждый месяц", yearly: "каждый год" };
+/* Убрать служебные метки действий из чужого текста (страницы, документы, результаты поиска) —
+   чтобы подброшенный текст не выглядел для нейросети как её собственные команды. */
+export const neutralize = t => String(t || "").replace(/<<<\s*ACTIONS|ACTIONS\s*>>>/gi, "[…]");
 export const pad = n => String(n).padStart(2, "0");
 export const hm = d => pad(d.getHours()) + ":" + pad(d.getMinutes());
 export const ymd = d => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
