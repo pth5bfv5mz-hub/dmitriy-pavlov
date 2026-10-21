@@ -9,7 +9,7 @@ import { relevantFacts, activeFacts, applyActions, stripActions, extractActions,
 import { addDoc, removeDoc, search, fromUrl, fromFile, ensureDocVecs, docsForPrompt } from "./knowledge.js";
 import * as V from "./voice.js";
 
-const VERSION = "3.6.1";
+const VERSION = "3.6.2";
 let mode = "auto", deep = false, photo = null, busy = null;
 
 /* =================== Часы и статус =================== */
@@ -223,7 +223,8 @@ async function send(text, opts = {}) {
     const visible = stripActions(res.text) || "Готово.";
     body.innerHTML = md(visible);
     feed(visible, true);
-    el.querySelector(".by").innerHTML = `Дмитрий Павлов <span>· ${esc(BRAINS[res.brain]?.name || "")}</span>`;
+    const who = (BRAINS[res.brain]?.name || "") + (/^gemma/.test(res.model || "") ? " · Gemma" : /small|ministral|nemo/.test(res.model || "") ? " · запасная" : "");
+    el.querySelector(".by").innerHTML = `Дмитрий Павлов <span>· ${esc(who)}</span>`;
     addSources(el, res.sources);
     const out = applyActions(extractActions(res.text), text, { temp });
     const msg = { role: "ai", text: visible, ts: Date.now(), sources: (res.sources || []).slice(0, 6), brain: res.brain, mode, temp };
@@ -248,8 +249,8 @@ async function send(text, opts = {}) {
   } catch (e) {
     if (speaker) speaker.cancel();
     if (e.name === "AbortError") { body.innerHTML = `<span class="thinking">Остановлено.</span>`; return ""; }
-    const m = explain(e);
-    body.innerHTML = `<span class="thinking">${esc(m)}</span>`;
+    const m = e.summary || explain(e);
+    body.innerHTML = `<span class="thinking">${esc(m).replace(/\n/g, "<br>")}</span>`;
     // Подробности от сервиса — чтобы можно было переслать и понять причину
     const raw = [e.status ? "Код " + e.status : "", String(e.message || ""), ...(e.tried || [])].filter(Boolean).join("\n");
     if (raw) { const d = document.createElement("details"); d.className = "errinfo"; d.innerHTML = `<summary>Подробности</summary><pre>${esc(raw.slice(0, 1500))}</pre>`; el.append(d); }
