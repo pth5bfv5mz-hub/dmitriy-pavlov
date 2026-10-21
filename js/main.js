@@ -9,7 +9,7 @@ import { relevantFacts, activeFacts, applyActions, stripActions, extractActions,
 import { addDoc, removeDoc, search, fromUrl, fromFile, ensureDocVecs, docsForPrompt } from "./knowledge.js";
 import * as V from "./voice.js";
 
-const VERSION = "3.8.1";
+const VERSION = "3.9.0";
 let mode = "auto", deep = false, photo = null, busy = null;
 
 /* =================== Часы и статус =================== */
@@ -767,17 +767,32 @@ $("#diagCopy").onclick = async () => { try { await navigator.clipboard.writeText
 /* =================== Данные =================== */
 let backupCache = "";
 async function prepBackup() { try { backupCache = JSON.stringify(await exportAll()); } catch {} }
-$("#backup").onclick = async () => {
+const backedUp = () => { D.meta.lastBackup = Date.now(); persist(); };
+/* Сохранить копию: «Поделиться» → Файлы/AirDrop/почта; запасной путь — буфер обмена. JSON готовится заранее,
+   потому что iPhone разрешает «Поделиться» только сразу после касания. */
+async function doBackup() {
   const json = backupCache || JSON.stringify(await exportAll());
   prepBackup();
   const name = "dmitriy-backup-" + todayKey() + ".json";
   try {
     const file = new File([json], name, { type: "application/json" });
-    if (navigator.canShare && navigator.canShare({ files: [file] })) { await navigator.share({ files: [file], title: "Копия Дмитрия" }); return; }
-  } catch (e) { if (e && e.name === "AbortError") return; }
-  try { await navigator.clipboard.writeText(json); toast("Копия скопирована. Сохрани её в Заметки iPhone.", 3500); }
-  catch { $("#restoreBox").hidden = false; $("#restoreText").value = json; $("#restoreText").select(); toast("Выдели и скопируй текст вручную."); }
-};
+    if (navigator.canShare && navigator.canShare({ files: [file] })) { await navigator.share({ files: [file], title: "Копия Дмитрия" }); backedUp(); return true; }
+  } catch (e) { if (e && e.name === "AbortError") return false; }
+  try { await navigator.clipboard.writeText(json); backedUp(); toast("Копия скопирована. Сохрани её в Заметки iPhone.", 3500); return true; }
+  catch { setTab("set"); $("#restoreBox").hidden = false; $("#restoreText").value = json; $("#restoreText").select(); toast("Выдели и скопируй текст вручную."); return false; }
+}
+$("#backup").onclick = () => doBackup();
+/* Раз в неделю напомнить о копии, если есть что терять (всё хранится только на телефоне). */
+function backupWorth() { return activeFacts().length >= 5 || D.docs.length > 0 || D.skills.length > 0 || D.msgs.length >= 40; }
+function offerBackup() {
+  if (!backupWorth() || Date.now() - (D.meta.lastBackup || Math.min(D.meta.firstSeen || Date.now(), (D.msgs[0] && D.msgs[0].ts) || Date.now())) < 7 * 864e5 || Date.now() - (D.meta.backupOffer || 0) < 3 * 864e5) return false;
+  D.meta.backupOffer = Date.now(); persist(); prepBackup();
+  const el = addMsg("ai", `Сумрак, всё, что я о тебе знаю (${plural(activeFacts().length, "факт", "факта", "фактов")}, ${plural(D.docs.length, "материал", "материала", "материалов")}, навыки), хранится только на этом телефоне. ${D.meta.lastBackup ? "Последней копии больше недели." : "Копии ещё не было."} Сохрани её в «Файлы» — займёт секунду.`);
+  const box = document.createElement("div"); box.className = "acts";
+  box.append(pill("💾 Сохранить копию", async e => { if (await doBackup()) { e.target.textContent = "✓ Сохранено"; e.target.disabled = true; } }));
+  el.append(box);
+  return true;
+}
 $("#restoreBtn").onclick = () => { $("#restoreBox").hidden = !$("#restoreBox").hidden; };
 async function restoreFrom(text) {
   try { await importAll(JSON.parse(text)); renderLists(); renderChat(); toast("Восстановлено.", 2000); $("#restoreBox").hidden = true; ensureDocVecs().then(renderKnow); prepBackup(); }
@@ -812,10 +827,15 @@ setQuotaHandler(ok => toast(ok ? "Память телефона почти за�
 tickClock(); setInterval(tickClock, 1000);
 renderModes(); fillSettings(); fillGeminiModels(); fillVoices(); renderLists(); renderChat(); setTab("chat");
 if (S.talkOnOpen && anyBrain()) openTalk({ waitTap: true });
+if (!D.meta.firstSeen) { D.meta.firstSeen = Date.now(); persist(); }
 updateLocal().then(() => {
+  if (offerVoice()) return;
+  setTimeout(offerBackup, 1500);
+});
+function offerVoice() {
   // Нормальный мужской голос ещё не скачан — предложим один раз в несколько дней (после смены голоса — сразу)
   const switched = S.voiceSwitched; if (switched) { S.voiceSwitched = false; saveSettings(); }
-  if (S.voiceMode !== "local" || V.localAvailable() || !anyBrain() || (!switched && Date.now() - (D.meta.voiceOffer || 0) < 3 * 864e5)) return;
+  if (S.voiceMode !== "local" || V.localAvailable() || !anyBrain() || (!switched && Date.now() - (D.meta.voiceOffer || 0) < 3 * 864e5)) return false;
   D.meta.voiceOffer = Date.now(); persist();
   const el = addMsg("ai", switched
     ? "Сумрак, я сменил себе голос на более низкий и спокойный — «Руслан». Скачай его один раз (около 60 МБ, лучше по Wi-Fi, VPN не нужен). Прежний голос можно вернуть в настройках."
@@ -824,7 +844,8 @@ updateLocal().then(() => {
   const out = document.createElement("div"); out.className = "small";
   box.append(pill("⬇️ Скачать голос", e => { V.unlock(); getLocalVoice(e.target, out); }));
   el.append(box, out);
-});
+  return true;
+}
 try { speechSynthesis.onvoiceschanged = fillVoices; } catch {}
 V.onSpeakingChange(syncSendBtn);
 setInterval(() => { checkReminders(); syncSendBtn(); }, 10000); checkReminders();

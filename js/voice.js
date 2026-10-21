@@ -210,7 +210,21 @@ export function createSpeaker({ limit = 0 } = {}) {
     else if (engine === "live") seg.audio = ttsGemini(seg.text, S.liveVoice);
     if (seg.audio) seg.audio.catch(() => {});
   };
+  // Длинный кусок (ответ пришёл целиком) режем на фразы: звук первой готов быстрее, и речь начинается сразу.
+  // Первую фразу дополнительно укорачиваем по запятой — от её длины зависит, как скоро Дмитрий заговорит.
   const add = text => {
+    const parts = sentences(speakable(text, true)).filter(Boolean);
+    if (!segs.length && parts.length) {   // первая — одно предложение, а не склейка нескольких
+      const first = ((parts[0].match(/[^.!?…]+[.!?…]*\s*/) || [parts[0]])[0]).trim();
+      if (first && first.length < parts[0].length) parts.splice(0, 1, first, parts[0].slice(first.length).trim());
+    }
+    if (!segs.length && parts.length && parts[0].length > 90) {
+      const m = parts[0].slice(25, 90).search(/[,;:—–]\s/);
+      if (m >= 0) { const at = 25 + m + 1; parts.splice(0, 1, parts[0].slice(0, at).trim(), parts[0].slice(at).trim()); }
+    }
+    parts.forEach(addOne);
+  };
+  const addOne = text => {
     if (cut || my !== token) return;
     let t = speakable(text, true); if (!t) return;
     if (limit && total + t.length > limit) { t = total ? "Остальное — на экране." : t.slice(0, limit); cut = true; }

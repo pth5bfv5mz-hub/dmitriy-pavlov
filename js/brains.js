@@ -468,7 +468,7 @@ async function chatCompat(brain, { system, hist, img, onText, onStatus, signal }
   const models = [...new Set([img ? c.vision : c.model, ...(img ? [] : c.spare || [])])].filter(Boolean).slice(0, 3);
   let mi = 0;
   for (let round = 0; round < 5; round++) {
-    const body = { model: models[mi], messages, temperature: 0.4 };
+    const body = { model: models[mi], messages, temperature: 0.4, stream: true };   // поток: текст появляется сразу
     if (round < 4) body.tools = TOOLS;
     if (noTools.has(body.model)) delete body.tools;
     const res = await spacedFetch(brain, c.url, { method: "POST", signal, headers: { "Content-Type": "application/json", "Authorization": "Bearer " + c.key.trim(), ...(c.headers || {}) }, body: JSON.stringify(body) }, signal, 0);
@@ -479,9 +479,8 @@ async function chatCompat(brain, { system, hist, img, onText, onStatus, signal }
     }
     if (!res.ok && (res.status === 429 || res.status >= 500 || (brain === "openrouter" && res.status === 404)) && mi < models.length - 1) { mi++; round--; continue; }
     if (!res.ok) await httpError(res, brain);
-    const j = await res.json();
-    const m = j.choices?.[0]?.message;
-    if (!m) throw new BrainError("Пустой ответ", 503, brain);
+    const m = /event-stream/i.test(res.headers.get("content-type") || "") ? await readCompatStream(res, onText, signal) : (await res.json()).choices?.[0]?.message;
+    if (!m || (!m.content && !(m.tool_calls && m.tool_calls.length))) throw new BrainError("Пустой ответ", 503, brain);
     if (m.tool_calls && m.tool_calls.length) {
       messages.push({ role: "assistant", content: m.content || "", tool_calls: m.tool_calls });
       (onStatus || onText)(m.tool_calls.some(t => t.function.name === "web_search") ? "Ищу в интернете…" : "Смотрю…");
@@ -493,6 +492,29 @@ async function chatCompat(brain, { system, hist, img, onText, onStatus, signal }
     return { text, sources, model: body.model };
   }
   throw new BrainError("Слишком много шагов поиска", 500, brain);
+}
+/* Поток в формате OpenAI: текст — кусками в delta.content, вызовы инструментов — частями в delta.tool_calls
+   (склеиваем по index, а если его нет — по id или порядку). */
+async function readCompatStream(res, onText, signal) {
+  let text = ""; const calls = [];
+  await readSSE(res, ev => {
+    if (ev.error) throw new BrainError(ev.error.message || "Ошибка", ev.error.code || 500, "");
+    const d = ev.choices && ev.choices[0] && (ev.choices[0].delta || ev.choices[0].message); if (!d) return;
+    if (d.content) {
+      text += typeof d.content === "string" ? d.content : (Array.isArray(d.content) ? d.content.map(p => p.text || "").join("") : "");
+      if (!calls.length) onText(text);
+    }
+    (d.tool_calls || []).forEach((tc, k) => {
+      let i = Number.isInteger(tc.index) ? tc.index : tc.id ? calls.findIndex(c => c && c.id === tc.id) : -1;
+      if (i < 0) i = tc.id || !calls.length ? calls.length : calls.length - 1;
+      const c = calls[i] || (calls[i] = { id: "", type: "function", function: { name: "", arguments: "" } });
+      if (tc.id) c.id = tc.id;
+      if (tc.function && tc.function.name) c.function.name = c.function.name || tc.function.name;
+      if (tc.function && tc.function.arguments != null) c.function.arguments += typeof tc.function.arguments === "string" ? tc.function.arguments : JSON.stringify(tc.function.arguments);
+    });
+  }, signal);
+  const tool_calls = calls.filter(c => c && c.function.name).map((c, i) => ({ ...c, id: c.id || "call_" + i }));
+  return { content: text, tool_calls };
 }
 async function plainCompat(brain, system, prompt) {
   const c = COMPAT[brain]();
