@@ -221,7 +221,7 @@ let thinkOff = true;      // отключать «раздумья» 2.5-flash �
 // Поэтому включаем его ТОЛЬКО когда вопрос явно про свежее/внешнее, а не на каждый «привет».
 const FRESH_RE = /новост|сейчас|сегодня|завтра|вчера|текущ|погод|курс|котировк|цен[аыу]|сколько стоит|стоит ли|прогноз|расписан|когда (выйд|будет|состо|начн|откро)|последн|актуальн|свеж|нынешн|202[4-9]|203\d|кто (сейчас|выиграл|победил|президент|глава)|результат|счёт матч|кто такой|что такое|where|погугли|найди|поищи|в интернете|ссылк|http/i;
 async function chatGemini({ system, hist, img, onText, signal, deep, wantSearch }) {
-  const base = { system_instruction: { parts: [{ text: system }] }, contents: gContents(hist, img), generationConfig: { temperature: deep ? 0.4 : 0.6 } };
+  const base = { system_instruction: { parts: [{ text: system }] }, contents: gContents(hist, img), generationConfig: { temperature: deep ? 0.3 : 0.45 } };
   let last; const tried = [];
   const lastUser = [...hist].reverse().find(h => h.role === "user");
   const wantNet = !img && (wantSearch || FRESH_RE.test(lastUser ? lastUser.text : ""));
@@ -415,7 +415,7 @@ async function netContext(q) {
   const urls = (q.match(/https?:\/\/\S+/g) || []).slice(0, 2);
   for (const u of urls) { try { parts.push(`Страница ${u}:\n` + (await readUrl(u)).slice(0, 6000)); sources.push({ url: u, title: "" }); } catch {} }
   const w = q.match(WEATHER_RE);
-  if (w) { try { const r = await toolWeather(w[1]); if (typeof r === "object") parts.push("Погода: " + JSON.stringify(r)); } catch {} }
+  if (w) { try { const r = await toolWeather(w[1]); if (typeof r === "object") { parts.push("Погода: " + JSON.stringify(r)); sources.push({ url: "https://open-meteo.com", title: "Open-Meteo (погода)" }); } } catch {} }
   if (!urls.length && !w) {
     const r = await toolWebSearch(q.replace(/[?!.]+$/, "").slice(0, 200), sources);
     if (typeof r === "object") parts.push(JSON.stringify(r).slice(0, 7000));
@@ -436,7 +436,7 @@ async function toolWeather(city) {
 async function runTool(call, sources) {
   let a = {}; try { a = JSON.parse(call.function.arguments || "{}"); } catch {}
   try {
-    if (call.function.name === "get_weather") return await toolWeather(String(a.city || ""));
+    if (call.function.name === "get_weather") { sources.push({ url: "https://open-meteo.com", title: "Open-Meteo (погода)" }); return await toolWeather(String(a.city || "")); }
     if (call.function.name === "read_url") { const t = await readUrl(String(a.url || "")); sources.push({ url: String(a.url), title: "" }); return t; }
     return await toolWebSearch(String(a.query || ""), sources);
   } catch (e) { return "Ошибка инструмента: " + e.message; }
@@ -468,7 +468,7 @@ async function chatCompat(brain, { system, hist, img, onText, onStatus, signal }
   const models = [...new Set([img ? c.vision : c.model, ...(img ? [] : c.spare || [])])].filter(Boolean).slice(0, 3);
   let mi = 0;
   for (let round = 0; round < 5; round++) {
-    const body = { model: models[mi], messages, temperature: 0.5 };
+    const body = { model: models[mi], messages, temperature: 0.4 };
     if (round < 4) body.tools = TOOLS;
     if (noTools.has(body.model)) delete body.tools;
     const res = await spacedFetch(brain, c.url, { method: "POST", signal, headers: { "Content-Type": "application/json", "Authorization": "Bearer " + c.key.trim(), ...(c.headers || {}) }, body: JSON.stringify(body) }, signal, 0);

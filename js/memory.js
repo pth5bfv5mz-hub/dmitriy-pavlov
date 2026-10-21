@@ -104,7 +104,8 @@ export function applyActions(act, userText, { temp } = {}) {
   }
   arr(act.tasks).forEach(t => {
     const text = String(typeof t === "string" ? t : t && t.text || "").trim(); if (!real(text)) return;
-    const due = t && t.due ? parseLocal(t.due) : null;
+    const sec = t && +t.in_sec;
+    const due = sec > 0 && sec < 366 * 86400 ? now + Math.round(sec * 1000) : t && t.due ? parseLocal(t.due) : null;
     const task = { id: uid(), text, due, repeat: due && REPEAT_TXT[t.repeat] ? t.repeat : null, done: false, notified: false, ts: now };
     D.tasks.push(task); out.newTasks.push(task);
   });
@@ -269,8 +270,11 @@ export function openMistakes() {
 /* Автоматические проверки ответа — без нейросети, на каждом ответе. */
 const PROMISE_RE = /(напомню|поставил[аи]? напоминани|поставил[аи]? (тебе )?(дело|задачу)|записал[аи]? (это )?в дела|добавил[аи]? (это )?(в дела|напоминани))/i;
 const FALSE_CANT_RE = /(не могу|не умею|нет возможности) (сам(остоятельно)? )?(ставить|поставить|создавать|создать|устанавливать) (напоминани|будильник|дел)|нет доступа к интернету|не имею доступа к интернету|нет выхода в интернет/i;
-export function selfCheck(question, reply, out) {
+const CLAIM_SEARCH_RE = /(я )?(нашёл|проверил|посмотрел|поискал|погуглил)[а-я]* (в интернете|в сети|в поиске|на сайте)|по (данным|информации) из интернета|согласно (свежим )?(данным|новостям) (из )?интернета/i;
+export function selfCheck(question, reply, out, { searched = true } = {}) {
   const found = [];
+  if (!searched && CLAIM_SEARCH_RE.test(reply))
+    found.push(addMistake({ what: "Я сказал, что нашёл или проверил что-то в интернете, хотя поиска в этом ответе не было.", why: "Выдал знания по памяти за свежий поиск.", fix: "Говори «нашёл в интернете» только когда поиск был и есть источники; иначе — «по моим данным, могло устареть» и предложи проверить.", q: question, src: "самопроверка ответа" }));
   if (PROMISE_RE.test(reply) && !out.newTasks.length && !/не напомню|могу напомнить|хочешь, напомню|напомню\?/i.test(reply))
     found.push(addMistake({ what: "Я сказал, что поставил напоминание, но само дело не создал — напоминания бы не было.", why: "Пообещал словами, но не добавил дело в блок действий.", fix: "Обещая напомнить, всегда создавай дело (tasks) с точной датой и временем; без этого напоминания не будет.", q: question, src: "самопроверка ответа" }));
   if (FALSE_CANT_RE.test(reply))

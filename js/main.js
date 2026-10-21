@@ -9,7 +9,7 @@ import { relevantFacts, activeFacts, applyActions, stripActions, extractActions,
 import { addDoc, removeDoc, search, fromUrl, fromFile, ensureDocVecs, docsForPrompt } from "./knowledge.js";
 import * as V from "./voice.js";
 
-const VERSION = "3.8.0";
+const VERSION = "3.8.1";
 let mode = "auto", deep = false, photo = null, busy = null;
 
 /* =================== Часы и статус =================== */
@@ -111,7 +111,10 @@ function askWhy(el, msg) {
 function greeting() {
   const h = new Date().getHours();
   const g = h < 5 ? "Доброй ночи" : h < 12 ? "Доброе утро" : h < 18 ? "Добрый день" : "Добрый вечер";
-  return `${g}, Сумрак. Я на связи. Говори или пиши.`;
+  const now = Date.now();
+  const over = D.tasks.filter(t => !t.done && t.due && t.due < now && now - t.due < 7 * 864e5 && !t.repeat);
+  const late = over.length ? `\n\nНе закрыто: ${over.slice(0, 3).map(t => "«" + t.text + "»").join(", ")}${over.length > 3 ? " и ещё " + (over.length - 3) : ""}. Сделано или перенести?` : "";
+  return `${g}, Сумрак. Я на связи. Говори или пиши.${late}`;
 }
 function renderChat() {
   $("#log").innerHTML = "";
@@ -227,10 +230,11 @@ async function send(text, opts = {}) {
     el.querySelector(".by").innerHTML = `Дмитрий Павлов <span>· ${esc(who)}</span>`;
     addSources(el, res.sources);
     const out = applyActions(extractActions(res.text), text, { temp });
-    if (!temp && selfCheck(text, visible, out).length) out.learned.push("свой недочёт");
+    if (!temp && selfCheck(text, visible, out, { searched: !!(res.sources && res.sources.length) }).length) out.learned.push("свой недочёт");
     const msg = { role: "ai", text: visible, ts: Date.now(), sources: (res.sources || []).slice(0, 6), brain: res.brain, mode, temp };
     D.msgs.push(msg); persist();
     if (out.newTasks.some(t => t.due)) addTaskButtons(el, out.newTasks.filter(t => t.due));
+    armReminder();
     addAiTools(el, msg);
     const notes = [];
     if (out.remembered.length) notes.push("🧠 Запомнил: " + out.remembered.join("; "));
@@ -413,7 +417,9 @@ function spokenGreeting() {
   const now = Date.now(), end = dayStart(new Date()) + 864e5;
   const today = D.tasks.filter(t => !t.done && t.due && t.due >= now && t.due < end).sort((a, b) => a.due - b.due);
   const tail = today.length ? ` Сегодня у тебя: ${today.slice(0, 2).map(t => t.text + " в " + hm(new Date(t.due))).join(", ")}.` : "";
-  return `${g}, Сумрак.${tail} Слушаю тебя.`;
+  const over = D.tasks.filter(t => !t.done && t.due && t.due < now && now - t.due < 7 * 864e5 && !t.repeat);
+  const late = over.length ? ` Не закрыто с прошлого: ${over.slice(0, 2).map(t => t.text).join(", ")}${over.length > 2 ? " и ещё " + (over.length - 2) : ""} — сделано или перенести?` : "";
+  return `${g}, Сумрак.${tail}${late} Слушаю тебя.`;
 }
 async function talkLoop() {
   const gen = ++talkGen;                      // только один цикл разговора одновременно
@@ -507,6 +513,7 @@ function checkReminders() {
   D.tasks.filter(t => !t.done && !t.notified && t.due && t.due <= now).forEach(t => {
     changed = true;
     if (now - t.due < 864e5) {
+      t.notifiedAt = now;
       const msg = "Сумрак, напоминаю: " + t.text;
       toast("⏰ " + t.text); V.beep(); addMsg("ai", msg);
       if (!talkOn) V.speak(msg, { force: true });
@@ -514,6 +521,15 @@ function checkReminders() {
     if (t.repeat) { t.due = nextDue(t.due, t.repeat); t.notified = false; } else t.notified = true;
   });
   if (changed) { persist(); renderTasks(); }
+  armReminder();
+}
+/* Точный таймер на ближайшее напоминание (до секунды), пока приложение открыто. */
+let remTimer = 0;
+function armReminder() {
+  clearTimeout(remTimer);
+  const next = D.tasks.filter(t => !t.done && !t.notified && t.due).reduce((m, t) => Math.min(m, t.due), Infinity);
+  const wait = next - Date.now();
+  if (wait < 864e5) remTimer = setTimeout(checkReminders, Math.max(0, wait) + 30);
 }
 
 /* =================== Списки =================== */
