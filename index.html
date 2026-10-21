@@ -66,8 +66,8 @@
       <ul class="list" id="tasks"></ul>
       <form class="add" id="addTask">
         <input id="newTask" placeholder="Новое дело" aria-label="Новое дело">
-        <input id="newDue" type="datetime-local" aria-label="Когда напомнить">
-        <select id="newRepeat" aria-label="Повтор">
+        <label class="due-lbl">Когда напомнить <span class="small">(необязательно)</span><input id="newDue" type="datetime-local"></label>
+        <select id="newRepeat" aria-label="Повтор" disabled title="Сначала выбери, когда напомнить">
           <option value="">Без повтора</option><option value="daily">Каждый день</option><option value="weekdays">По будням</option>
           <option value="weekly">Каждую неделю</option><option value="monthly">Каждый месяц</option><option value="yearly">Каждый год</option>
         </select>
@@ -169,6 +169,7 @@
         <label for="mistralModel">Модель</label>
         <select id="mistralModel"><option value="mistral-medium-latest">Medium — умная</option><option value="mistral-large-latest">Large — самая умная</option><option value="mistral-small-latest">Small — быстрая</option></select>
       </details>
+      <p class="small group-note">Дополнительно, по желанию — каждая следующая нейросеть добавляет свой бесплатный лимит:</p>
       <details class="field" id="d-zai">
         <summary>Z.ai GLM — бесплатно, <b>без VPN</b> <span class="ok-mark" data-ok="zaiKey"></span></summary>
         <p class="small">Ключ: <a href="https://z.ai/manage-apikey/apikey-list" target="_blank" rel="noopener">z.ai</a> → API Keys. Бесплатная модель glm-4.7-flash.</p>
@@ -234,7 +235,7 @@
       <label class="check"><input type="checkbox" id="autoReminders"> Сразу отправлять новые напоминания в iPhone</label>
 
       <h2>Напоминания iPhone</h2>
-      <p class="small">Чтобы напоминания звенели при закрытом приложении, один раз создай команду «ДП Напоминание»: <a href="guide.html#reminders" target="_blank" rel="noopener">инструкция</a>.</p>
+      <p class="small">Чтобы напоминания звенели при закрытом приложении, один раз создай команду «ДП Напоминание»: <a href="guide.html#reminders">инструкция</a>.</p>
       <div class="row-btns"><button type="button" id="testReminder">Проверить команду</button></div>
 
       <h2>Проверка системы</h2>
@@ -243,18 +244,18 @@
       <ul class="list" id="diag"></ul>
 
       <h2>Данные</h2>
-      <p class="small">Всё хранится только на этом телефоне. Делай резервную копию раз в неделю.</p>
+      <p class="small">Всё хранится только на этом телефоне. Делай резервную копию раз в неделю. <span id="lastBackup"></span></p>
       <div class="row-btns">
         <button type="button" id="backup">Сохранить копию</button>
         <button type="button" id="restoreBtn">Восстановить</button>
-        <button type="button" id="clearChat">Очистить переписку</button>
+        <button type="button" id="clearChat" class="danger">Очистить переписку</button>
       </div>
       <div id="restoreBox" hidden class="field">
         <input type="file" id="restoreFile" accept=".json,application/json,text/plain" aria-label="Файл копии">
         <textarea id="restoreText" rows="3" placeholder="…или вставь текст копии"></textarea>
         <div class="row-btns"><button type="button" id="restoreGo">Восстановить из текста</button></div>
       </div>
-      <p class="small"><a href="guide.html" target="_blank" rel="noopener">Инструкция</a> · <span id="ver"></span></p>
+      <p class="small"><a href="guide.html">Инструкция</a> · <span id="ver"></span></p>
     </section>
   </main>
 
@@ -270,10 +271,11 @@
 <!-- Голосовой разговор -->
 <div class="talk" id="talkView" hidden role="dialog" aria-modal="true" aria-label="Голосовой разговор">
   <div class="talk-top"><span id="talkBrain"></span><button type="button" class="x big" id="talkClose" aria-label="Завершить разговор">×</button></div>
-  <button type="button" class="orb" id="orb" aria-label="Говорить или прервать"><span class="orb-ring" id="orbRing"></span></button>
+  <button type="button" class="orb" id="orb" aria-label="Говорить или прервать"><span class="orb-ring" id="orbRing"></span><svg class="orb-mic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg></button>
   <p class="talk-state" id="talkState" role="status" aria-live="polite">Нажми и говори</p>
   <p class="talk-text" id="talkText"></p>
   <p class="small talk-hint">Нажми на круг, чтобы перебить или заговорить. Скажи «стоп» или «хватит», чтобы закончить.</p>
+  <button type="button" class="talk-type" id="talkType" hidden>Написать текстом</button>
 </div>
 
 <div class="toast" id="toast" hidden role="alert"><span id="toastText"></span><button type="button" id="toastOk">Понял</button></div>

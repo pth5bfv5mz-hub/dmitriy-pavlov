@@ -1,13 +1,13 @@
 /* Дмитрий Павлов — минималистичный интерфейс. Разговор на весь экран, нижняя панель вкладок как в приложениях iOS. */
 :root{
-  --bg:#f4f5f6; --surface:#ffffff; --line:#e1e4e8; --fg:#15181c; --muted:#68717b;
+  --bg:#f4f5f6; --surface:#ffffff; --line:#e1e4e8; --field:#868e98; --fg:#15181c; --muted:#68717b;
   --accent:#2c4f78; --accent-soft:#e7edf5; --ok:#2f7a4f; --warn:#a45a12; --on-accent:#ffffff;
   --font-body:-apple-system,"SF Pro Text","Onest",system-ui,"Segoe UI",Roboto,sans-serif;
   --font-mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
   color-scheme:light;
 }
 @media (prefers-color-scheme:dark){:root{
-  --bg:#0f1113; --surface:#171a1e; --line:#272c32; --fg:#e7e9ec; --muted:#8a939d;
+  --bg:#0f1113; --surface:#171a1e; --line:#272c32; --field:#67707b; --fg:#e7e9ec; --muted:#8a939d;
   --accent:#8db2e0; --accent-soft:#1c2633; --ok:#6cc391; --warn:#e2a35c; --on-accent:#0f1113; color-scheme:dark}}
 
 *{box-sizing:border-box}
@@ -28,6 +28,7 @@ a{color:var(--accent)}
 .who p{margin:1px 0 0;color:var(--muted);font-size:13px;display:flex;align-items:center;gap:7px}
 .dot{width:8px;height:8px;border-radius:50%;background:var(--muted);flex:none}
 .dot.on{background:var(--ok)}
+.dot.warn{background:var(--warn)}
 .dot.listen{background:var(--warn);animation:pulse 1.4s ease-in-out infinite}
 @keyframes pulse{50%{opacity:.35}}
 .clock{text-align:right}
@@ -56,7 +57,7 @@ body[data-tab="mem"] #v-mem,body[data-tab="set"] #v-set,body[data-tab="know"] #v
 .card{border:1px solid var(--line);border-radius:12px;padding:14px;background:var(--bg);display:flex;flex-direction:column;gap:8px;max-width:100%}
 .card h3{margin:0;font-size:16px}
 .card p{margin:0;font-size:14.5px}
-.card input{border:1px solid var(--line);border-radius:8px;padding:9px 10px;background:var(--surface);min-width:0}
+.card input{border:1px solid var(--field);border-radius:8px;padding:9px 10px;background:var(--surface);min-width:0}
 .card button{align-self:flex-start;background:var(--accent);color:var(--on-accent);border:0;border-radius:8px;padding:8px 14px}
 
 .photo-prev{display:flex;align-items:center;gap:10px;padding:6px 16px;font-size:13.5px;color:var(--muted)}
@@ -65,12 +66,12 @@ body[data-tab="mem"] #v-mem,body[data-tab="set"] #v-set,body[data-tab="know"] #v
 .msg .thumb{display:block;max-width:180px;max-height:180px;border-radius:10px;margin-bottom:6px}
 .grp{padding:10px 12px 4px;font-size:11.5px;letter-spacing:.07em;text-transform:uppercase;color:var(--muted);border-bottom:1px solid var(--line)}
 .diary{white-space:pre-wrap;background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:12px;margin:0;font-size:14.5px}
-.add select{flex:1 1 140px;min-width:0;border:1px solid var(--line);background:var(--surface);border-radius:10px;padding:9px 11px}
+.add select{flex:1 1 140px;min-width:0;border:1px solid var(--field);background:var(--surface);border-radius:10px;padding:9px 11px}
 .hint{font-size:13px;color:var(--muted);padding:0 16px 8px}
 .composer{display:flex;gap:6px;align-items:flex-end;border-top:1px solid var(--line);
   padding:8px max(10px,env(safe-area-inset-right,0px)) 8px max(10px,env(safe-area-inset-left,0px));background:var(--surface)}
-.composer textarea{flex:1;min-width:0;resize:none;border:1px solid var(--line);border-radius:20px;background:var(--bg);padding:9px 14px;max-height:140px;outline:none;font-size:16px}
-.ib{width:40px;height:40px;flex:none;border-radius:50%;border:1px solid var(--line);background:var(--surface);display:grid;place-items:center;color:var(--muted)}
+.composer textarea{flex:1;min-width:0;resize:none;border:1px solid var(--field);border-radius:20px;background:var(--bg);padding:9px 14px;max-height:140px;outline:none;font-size:16px}
+.ib{width:44px;height:44px;flex:none;border-radius:50%;border:1px solid var(--line);background:var(--surface);display:grid;place-items:center;color:var(--muted)}
 .ib svg{width:19px;height:19px}
 .ib.primary{background:var(--accent);border-color:var(--accent);color:var(--on-accent)}
 .ib.live{color:var(--warn);border-color:var(--warn);animation:pulse 1.2s ease-in-out infinite}
@@ -96,16 +97,19 @@ body[data-tab="mem"] #v-mem,body[data-tab="set"] #v-set,body[data-tab="know"] #v
 .row input[type=checkbox]{width:18px;height:18px;margin:3px 0 0;accent-color:var(--accent)}
 .row .btns{display:flex;gap:2px}
 .x{background:none;border:0;color:var(--muted);padding:2px 6px;font-size:16px;line-height:1}
+.row .x.armed{color:var(--warn);font-size:14px;font-weight:600}
+.row .x{min-width:44px;min-height:44px;margin:-10px -6px -10px 0;display:inline-grid;place-items:center;font-size:18px}   /* палец попадает уверенно */
 .empty{color:var(--muted);font-size:14.5px;margin:0;padding:12px;background:var(--surface);border:1px dashed var(--line);border-radius:12px}
 .add{display:flex;gap:8px;flex-wrap:wrap}
-.add input{flex:1 1 160px;min-width:0;border:1px solid var(--line);background:var(--surface);border-radius:10px;padding:9px 11px}
+.add input{flex:1 1 160px;min-width:0;border:1px solid var(--field);background:var(--surface);border-radius:10px;padding:9px 11px}
 .add button,.row-btns button{border:1px solid var(--line);background:var(--surface);border-radius:10px;padding:9px 14px}
 .small{font-size:13.5px;color:var(--muted);margin:0}
 .field{display:flex;flex-direction:column;gap:6px;background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:12px}
 .field label{font-size:14px;font-weight:500}
-.field input,.field select,#restoreText{border:1px solid var(--line);background:var(--bg);border-radius:10px;padding:9px 11px;min-width:0;width:100%}
+.field input,.field select,#restoreText{border:1px solid var(--field);background:var(--bg);border-radius:10px;padding:9px 11px;min-width:0;width:100%}
 .field input[type=range]{padding:0;border:0;background:none}
 .check{display:flex;gap:10px;align-items:center;font-size:15px}
+.check input{flex:none;width:20px;height:20px}
 .check input{width:20px;height:20px;accent-color:var(--accent)}
 .row-btns{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
 
@@ -116,7 +120,7 @@ body[data-tab="mem"] #v-mem,body[data-tab="set"] #v-set,body[data-tab="know"] #v
 .tabbar button[aria-selected="true"]{color:var(--accent)}
 .tabbar i{font-style:normal;font-family:var(--font-mono);margin-left:3px}
 
-.toast{position:fixed;left:50%;transform:translateX(-50%);top:calc(12px + env(safe-area-inset-top,0px));background:var(--fg);color:var(--bg);
+.toast{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(150px + env(safe-area-inset-bottom,0px));background:var(--fg);color:var(--bg);
   padding:12px 16px;border-radius:12px;width:max-content;max-width:calc(100% - 32px);display:flex;gap:12px;align-items:center;z-index:20;box-shadow:0 8px 30px rgba(0,0,0,.2)}
 .toast button{background:none;border:1px solid currentColor;color:inherit;border-radius:8px;padding:4px 10px;font-size:14px;flex:none}
 
@@ -128,7 +132,10 @@ body[data-tab="mem"] #v-mem,body[data-tab="set"] #v-set,body[data-tab="know"] #v
 .vb-level i{display:block;width:4px;height:6px;border-radius:2px;background:var(--warn);transition:height .08s linear}
 .vb-text{flex:1;min-width:0;display:flex;flex-direction:column;line-height:1.25}
 .vb-text b{font-size:15px;font-weight:600}
-.vb-text span{font-size:12.5px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.vb-text span{font-size:12.5px;color:var(--muted);overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
+.due-lbl{flex:1 1 200px;min-width:0;display:flex;flex-direction:column;gap:4px;font-size:13px;color:var(--muted)}
+.due-lbl input{width:100%;min-height:42px;color:var(--fg)}
+.add select:disabled{opacity:.55}
 .vb-time{font-family:var(--font-mono);font-size:13px;color:var(--muted);flex:none}
 .vb-x{width:36px;height:36px;flex:none;border-radius:50%;border:1px solid var(--line);background:var(--bg);color:var(--muted);font-size:15px}
 .vb-done{flex:none;height:38px;padding:0 16px;border-radius:19px;border:0;background:var(--accent);color:var(--on-accent);font-weight:600;font-size:15px}
@@ -155,18 +162,20 @@ body[data-tab="mem"] #v-mem,body[data-tab="set"] #v-set,body[data-tab="know"] #v
 .modes{display:flex;gap:6px;overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:none;
   padding:6px max(10px,env(safe-area-inset-right,0px)) 2px max(10px,env(safe-area-inset-left,0px));border-top:1px solid var(--line)}
 .modes::-webkit-scrollbar{display:none}
-.chip{flex:none;background:var(--bg);border:1px solid var(--line);border-radius:999px;padding:4px 11px;font-size:13px;color:var(--muted);white-space:nowrap}
+/* Ряд листается вбок: правый край затухает — видно, что дальше есть ещё (пропадает, когда долистал) */
+.modes.more{-webkit-mask-image:linear-gradient(to right,#000 80%,transparent);mask-image:linear-gradient(to right,#000 80%,transparent)}
+.chip{flex:none;background:var(--bg);border:1px solid var(--line);border-radius:999px;padding:4px 12px;min-height:36px;font-size:13.5px;color:var(--muted);white-space:nowrap}
 .chip.on{background:var(--accent);border-color:var(--accent);color:var(--on-accent)}
 .modes .sep{flex:none;width:1px;background:var(--line);margin:2px 2px}
 .seg{display:flex;border:1px solid var(--line);border-radius:10px;overflow:hidden;background:var(--surface)}
 .seg button{flex:1;background:none;border:0;padding:9px 6px;font-size:14px;color:var(--muted)}
 .seg button[aria-pressed="true"]{background:var(--accent-soft);color:var(--accent);font-weight:600}
-.field textarea{border:1px solid var(--line);background:var(--bg);border-radius:10px;padding:9px 11px;width:100%;resize:vertical;font-size:16px}
+.field textarea{border:1px solid var(--field);background:var(--bg);border-radius:10px;padding:9px 11px;width:100%;resize:vertical;font-size:16px}
 .primary-btn{background:var(--accent)!important;color:var(--on-accent)!important;border-color:var(--accent)!important}
 .row-btns button:disabled{opacity:.55}
-details.field summary{cursor:pointer;font-weight:500;list-style:none;display:flex;gap:6px;align-items:baseline;flex-wrap:wrap}
+details.field summary{cursor:pointer;font-weight:500;list-style:none;display:block;position:relative;padding-left:16px}
 details.field summary::-webkit-details-marker{display:none}
-details.field summary::before{content:"›";display:inline-block;width:10px;color:var(--muted);transition:transform .15s}
+details.field summary::before{content:"›";position:absolute;left:0;top:0;width:10px;color:var(--muted);transition:transform .15s}
 details.field[open] summary::before{transform:rotate(90deg)}
 details.field[open] summary{margin-bottom:6px}
 .ok-mark{color:var(--ok);font-weight:700}
@@ -181,7 +190,13 @@ details.field[open] summary{margin-bottom:6px}
 .orb-ring{position:absolute;inset:-14px;border-radius:50%;border:2px solid var(--accent);opacity:.35;transition:transform .08s linear}
 .talk[data-phase="thinking"] .orb,.talk[data-phase="transcribing"] .orb{animation:breathe 1.6s ease-in-out infinite}
 .talk[data-phase="speaking"] .orb-ring{animation:ripple 1.4s ease-out infinite}
-.talk[data-phase="idle"] .orb{filter:saturate(.4)}
+/* Ждёт касания — круг яркий, с микрофоном и мягкой пульсацией: «нажми меня», а не «выключено» */
+.talk[data-phase="idle"] .orb{animation:breathe 2.4s ease-in-out infinite}
+.orb-mic{position:absolute;inset:0;margin:auto;width:28%;height:28%;color:var(--on-accent);opacity:0;transition:opacity .2s}
+.talk[data-phase="idle"] .orb-mic{opacity:.95}
+.talk.err .talk-hint{display:none}
+.talk-type{border:1px solid var(--field);background:var(--surface);color:var(--fg);border-radius:12px;padding:11px 18px;font-size:16px;min-height:44px}
+#talkClose{min-width:44px;min-height:44px}
 @keyframes breathe{50%{transform:scale(.92)}}
 @keyframes ripple{from{transform:scale(1);opacity:.5}to{transform:scale(1.35);opacity:0}}
 .talk-state{margin:0;font-size:19px;font-weight:600}
@@ -191,3 +206,14 @@ details.field[open] summary{margin-bottom:6px}
 #diag .due{font-family:inherit;font-size:13.5px}
 .errinfo{margin-top:6px;font-size:12.5px;color:var(--muted)}
 .errinfo pre{white-space:pre-wrap;overflow-wrap:anywhere;font-family:var(--font-mono);font-size:11.5px;margin:6px 0 0;background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:8px}
+
+/* Узкий экран (iPhone SE, 320–360 px): кнопки чуть меньше, чтобы поле ввода не сжималось до «Сообщени» */
+@media (max-width:360px){.ib{width:38px;height:38px}.composer{gap:4px}}
+.steps{margin:0;padding-left:20px;display:flex;flex-direction:column;gap:6px}
+.steps .pill{display:inline-block;margin-top:4px;text-decoration:none;color:var(--accent);font-weight:600}
+.key-row{display:flex;gap:8px}.key-row input{flex:1;min-width:0}
+.more-key summary{cursor:pointer;color:var(--accent);font-size:14.5px}
+.more-key[open] summary{margin-bottom:6px}
+.row-btns button.danger{color:#b3261e;border-color:color-mix(in srgb,#b3261e 45%,var(--line))}
+@media (prefers-color-scheme:dark){.row-btns button.danger{color:#f2a19b}}
+.group-note{margin:6px 2px 0}

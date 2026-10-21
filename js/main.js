@@ -9,8 +9,8 @@ import { relevantFacts, activeFacts, applyActions, stripActions, extractActions,
 import { addDoc, removeDoc, search, fromUrl, fromFile, ensureDocVecs, docsForPrompt } from "./knowledge.js";
 import * as V from "./voice.js";
 
-const VERSION = "3.12.1";
-let mode = "auto", deep = false, photo = null, busy = null;
+const VERSION = "3.13.0";
+let mode = "auto", deep = false, photo = null, busy = null, lastFail = "";
 
 /* =================== Часы и статус =================== */
 function tickClock() {
@@ -27,6 +27,8 @@ function idleStatus() {
   const list = order();
   if (!list.length) return status("Нужно подключить мозг");
   const b = list[0];
+  // Последний ответ не удался — не делаем вид, что всё в порядке (до следующего удачного ответа)
+  if (lastFail) return status(lastFail, "warn"), syncSendBtn();
   status("На связи · " + BRAINS[b].name + (D.meta.tempChat ? " · инкогнито" : ""), "on");
   syncSendBtn();
 }
@@ -39,10 +41,17 @@ function syncSendBtn() {
   $("#log").setAttribute("aria-busy", String(!!busy));
 }
 function toast(t, ms) {
+  if (toastUndo) { toastUndo = null; $("#toastOk").textContent = "Понял"; }
   $("#toastText").textContent = t; $("#toast").hidden = false;
   clearTimeout(toast.t); if (ms) toast.t = setTimeout(() => { $("#toast").hidden = true; }, ms);
 }
-$("#toastOk").onclick = () => { $("#toast").hidden = true; };
+$("#toastOk").onclick = () => { $("#toast").hidden = true; const u = toastUndo; toastUndo = null; $("#toastOk").textContent = "Понял"; if (u) u(); };
+/* Удалено — 6 секунд можно вернуть. */
+let toastUndo = null;
+function undoable(text, undo) {
+  toast(text, 6000); toastUndo = undo; $("#toastOk").textContent = "Вернуть";
+  clearTimeout(undoable.t); undoable.t = setTimeout(() => { toastUndo = null; $("#toastOk").textContent = "Понял"; }, 6000);
+}
 
 /* =================== Режимы =================== */
 function renderModes() {
@@ -66,6 +75,15 @@ $("#modes").addEventListener("click", e => {
 
 /* =================== Чат =================== */
 const scrollDown = () => { const l = $("#log"); l.scrollTop = l.scrollHeight; };
+/* Показать ответ: короткий — прокрутить вниз; длинный (выше экрана) — держать его начало вверху,
+   чтобы читать с первой строки, а не искать её. Если Сумрак сам листает — не мешаем. */
+let userScrolled = false;
+function showReply(el) {
+  if (userScrolled) return;
+  const l = $("#log");
+  if (el.offsetHeight > l.clientHeight - 40) l.scrollTop += el.getBoundingClientRect().top - l.getBoundingClientRect().top - 8;
+  else scrollDown();
+}
 function addMsg(role, text, extra = {}) {
   const el = document.createElement("div");
   el.className = "msg " + role + (extra.temp ? " temp" : "");
@@ -110,12 +128,13 @@ function askWhy(el, msg) {
     catch (err) { f.querySelector("button").disabled = false; f.querySelector("button").textContent = "Научить"; toast(explain(err)); }
   };
   el.append(f); f.querySelector("input").focus();
+  setTimeout(() => f.scrollIntoView({ block: "nearest", behavior: "smooth" }), 300);   // после появления клавиатуры
 }
 function greeting() {
   const h = new Date().getHours();
   const g = h < 5 ? "Доброй ночи" : h < 12 ? "Доброе утро" : h < 18 ? "Добрый день" : "Добрый вечер";
   const now = Date.now();
-  const over = D.tasks.filter(t => !t.done && t.due && t.due < now && now - t.due < 7 * 864e5 && !t.repeat);
+  const over = D.tasks.filter(t => !t.done && t.notified && t.due && t.due < now && now - t.due < 7 * 864e5 && !t.repeat);
   const late = over.length ? `\n\nНе закрыто: ${over.slice(0, 3).map(t => "«" + t.text + "»").join(", ")}${over.length > 3 ? " и ещё " + (over.length - 3) : ""}. Сделано или перенести?` : "";
   return `${g}, Сумрак. Я на связи. Говори или пиши.${late}`;
 }
@@ -128,6 +147,8 @@ function renderChat() {
   if (!anyBrain()) return showSetupCard();
   if (S.briefing && D.meta.lastBrief !== todayKey() && !D.meta.tempChat) showBriefing();
   else { const g = greeting(); addMsg("ai", g); rememberAsk(g); }
+  // Один раз объяснить две голосовые кнопки — по виду их не различить
+  if (!D.meta.voiceHint) { D.meta.voiceHint = Date.now(); persist(); addMsg("ai", "Подсказка, Сумрак: 🎤 справа — сказать одну фразу (я отвечу и замолчу). Кнопка-волна ≋ рядом — голосовой разговор: говоришь, я отвечаю и снова слушаю, без рук."); }
 }
 /* Если Дмитрий сам что-то спросил (например, о незакрытых делах) — кладём это в историю,
    иначе на ответ «перенеси на завтра» нейросеть не поймёт, о чём речь. */
@@ -137,33 +158,54 @@ function rememberAsk(text) {
   if (D.msgs.slice(-12).some(m => m.role === "ai" && /Не закрыто/.test(m.text) && Date.now() - (m.ts || 0) < 6 * 36e5)) return;
   D.msgs.push({ role: "ai", text, ts: Date.now() }); persist();
 }
+/* Первый запуск: один рекомендуемый путь (Mistral — работает без VPN), по шагам, с проверкой ключа. */
+let pendingAsk = "";   // вопрос, заданный до подключения, — отвечу сразу после
 function showSetupCard() {
-  const el = document.createElement("div"); el.className = "msg ai";
+  const el = document.createElement("div"); el.className = "msg ai setup";
   el.innerHTML = `<div class="by">Дмитрий Павлов</div>
     <div class="card">
-      <h3>Привет, Сумрак. Подключи мне мозг</h3>
-      <p><b>Вариант 1 — Gemini</b> (самый умный, живой голос; нужен включённый VPN). Ключ: <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com/apikey</a></p>
-      <input id="qGemini" type="password" autocomplete="off" placeholder="Ключ Gemini (AIza…)" aria-label="Ключ Gemini">
-      <p><b>Вариант 2 — Mistral</b> (работает без VPN). Ключ: <a href="https://console.mistral.ai" target="_blank" rel="noopener">console.mistral.ai</a> → API Keys</p>
-      <input id="qMistral" type="password" autocomplete="off" placeholder="Ключ Mistral" aria-label="Ключ Mistral">
-      <button type="button" id="qSave">Подключить</button>
-      <p class="small">Лучше подключить оба: без VPN я буду работать на Mistral, с VPN — на Gemini. Ключи остаются только на этом телефоне.</p>
+      <h3>Привет, Сумрак. Подключи мне мозг — это бесплатно</h3>
+      <ol class="steps">
+        <li>Открой сайт Mistral (работает из России без VPN): <a class="pill" href="https://console.mistral.ai/api-keys" target="_blank" rel="noopener">Открыть Mistral</a></li>
+        <li>Войди (через Google или почту), выбери бесплатный план и подтверди номер телефона.</li>
+        <li>Нажми «Create new key» и скопируй ключ.</li>
+        <li>Вернись сюда и вставь его:</li>
+      </ol>
+      <div class="key-row"><input id="qMistral" type="password" autocomplete="off" placeholder="Ключ Mistral" aria-label="Ключ Mistral"><button type="button" class="pill" id="qPaste">Вставить</button></div>
+      <details class="more-key"><summary>Есть VPN? Добавь ещё Gemini — он умнее и умеет искать в Google</summary>
+        <p class="small">Ключ: <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com/apikey</a> (с включённым VPN) → «Create API key».</p>
+        <input id="qGemini" type="password" autocomplete="off" placeholder="Ключ Gemini (AIza…)" aria-label="Ключ Gemini">
+      </details>
+      <button type="button" id="qSave" class="primary-btn">Подключить</button>
+      <p class="small" id="qMsg" role="status"></p>
+      <p class="small">Ключи остаются только на этом телефоне. <a href="guide.html#brain">Подробная инструкция</a></p>
     </div>`;
   $("#log").append(el);
-  el.querySelector("#qSave").onclick = async () => {
-    const g = el.querySelector("#qGemini").value.trim(), m = el.querySelector("#qMistral").value.trim();
-    if (!g && !m) return;
-    if (g) S.geminiKey = g; if (m) S.mistralKey = m;
-    saveSettings(); fillSettings(); el.remove();
-    const w = addMsg("ai", "Ключ сохранил. Проверяю связь…");
-    const results = [];
-    for (const b of configured()) {
-      try { const r = await ping(b); results.push(`✅ ${BRAINS[b].name} — работает (${r.model}, ${(r.ms / 1000).toFixed(1)} с)`); }
-      catch (e) { results.push(`⚠️ ${explain(e)}`); }
-    }
-    w.querySelector(".body").innerHTML = md(results.join("\n") + "\n\nМожешь говорить или писать.");
-    idleStatus(); discoverGemini().then(fillGeminiModels).catch(() => {});
+  const msg = t => { el.querySelector("#qMsg").textContent = t; };
+  el.querySelector("#qPaste").onclick = async () => {
+    try { const t = (await navigator.clipboard.readText()).trim(); if (t) { el.querySelector("#qMistral").value = t; msg(""); } else msg("В буфере пусто — сначала скопируй ключ на сайте Mistral."); }
+    catch { el.querySelector("#qMistral").focus(); msg("Нажми на поле и выбери «Вставить»."); }
   };
+  el.querySelector("#qSave").onclick = async e => {
+    const g = el.querySelector("#qGemini").value.trim(), m = el.querySelector("#qMistral").value.trim();
+    if (!g && !m) { msg("Сначала вставь ключ."); el.querySelector("#qMistral").focus(); return; }
+    const btn = e.target; btn.disabled = true; btn.textContent = "Проверяю связь…"; msg("");
+    if (g) S.geminiKey = g; if (m) S.mistralKey = m;
+    saveSettings();
+    const ok = [], bad = [];
+    for (const b of [m && "mistral", g && "gemini"].filter(Boolean)) {
+      try { await ping(b); ok.push(b); }
+      catch (err) { bad.push(explain(err)); if (b === "gemini") S.geminiKey = ""; else S.mistralKey = ""; }   // неверный ключ не оставляем
+    }
+    saveSettings(); fillSettings(); idleStatus();
+    if (!ok.length) { btn.disabled = false; btn.textContent = "Подключить"; msg("Не получилось: " + bad.join(" ") + " Проверь, что ключ скопирован целиком."); return; }
+    el.remove();
+    addMsg("ai", "Готово, я на связи. Можешь говорить или писать." + (bad.length ? "\n\n⚠️ Второй ключ не подошёл: " + bad.join(" ") : ""));
+    discoverGemini().then(fillGeminiModels).catch(() => {});
+    if (pendingAsk) { const q = pendingAsk; pendingAsk = ""; send(q, { retry: true }).catch(() => {}); }
+  };
+  // Открываем карточку с начала, а не прокрученной до середины
+  setTimeout(() => el.scrollIntoView({ block: "start" }), 0);
 }
 /* Утренняя сводка — при первом открытии за день. */
 function showBriefing() {
@@ -202,7 +244,11 @@ async function send(text, opts = {}) {
     addMsg("me", text, { img: img && img.url, temp });
     D.msgs.push({ role: "user", text, ts: Date.now(), photo: !!img, temp }); persist();
   }
-  if (!anyBrain()) { addMsg("sys", "Сначала подключи мозг: вставь ключ во вкладке «Настройки»."); return ""; }
+  if (!anyBrain()) {
+    pendingAsk = text;
+    addMsg("sys", $("#log .setup") ? "Сначала подключи мозг — карточка выше. Твой вопрос я запомнил и отвечу сразу после подключения." : "Сначала подключи мозг: вставь ключ во вкладке «Настройки».");
+    return "";
+  }
   const el = addMsg("ai", "", { temp }); const body = el.querySelector(".body");
   body.innerHTML = `<span class="thinking">${img ? "Смотрю на фото…" : deep ? "Думаю глубоко…" : "Думаю…"}</span>`;
   const ctl = new AbortController(); busy = ctl; idleStatus(); syncSendBtn();
@@ -220,7 +266,8 @@ async function send(text, opts = {}) {
   };
   // Перерисовка не чаще кадра экрана: на длинных ответах md() для каждого кусочка тормозил телефон
   let pending = "", raf = 0;
-  const paint = () => { raf = 0; if (pending && busy === ctl) { body.innerHTML = md(pending); scrollDown(); } };
+  userScrolled = false;
+  const paint = () => { raf = 0; if (pending && busy === ctl) { body.innerHTML = md(pending); showReply(el); } };
   const onText = t => { const v = stripActions(t); if (v) { pending = v; if (!raf) raf = requestAnimationFrame(paint); if (opts.onReply) opts.onReply(v); if (!/^(Ищу|Смотрю)/.test(v)) feed(v); } };
   try {
     const [facts, knowledge] = await Promise.all([relevantFacts(text).catch(() => activeFacts().slice(-40)), search(text).catch(() => [])]);
@@ -259,8 +306,8 @@ async function send(text, opts = {}) {
     if (out.cards) notes.push("🃏 " + plural(out.cards, "новая карточка", "новые карточки", "новых карточек"));
     if (notes.length) { const n = document.createElement("div"); n.className = "memnote"; n.textContent = notes.join(" · "); el.append(n); }
     renderLists();
-    scrollDown();
-    busy = null; idleStatus();
+    showReply(el);
+    busy = null; lastFail = ""; idleStatus();
     background();
     const spoken = speaker ? speaker.end() : Promise.resolve();
     if (opts.voice) { await spoken; return visible; }
@@ -272,6 +319,7 @@ async function send(text, opts = {}) {
     if (speaker) speaker.cancel();
     if (e.name === "AbortError") { body.innerHTML = `<span class="thinking">Остановлено.</span>`; return ""; }
     const m = e.summary || explain(e);
+    lastFail = /лимит|подожд/i.test(m) ? "Лимит нейросети — подожди" : /связи|интернет/i.test(m) ? "Нет связи с нейросетью" : "Нейросеть не ответила";
     body.innerHTML = `<span class="thinking">${esc(m).replace(/\n/g, "<br>")}</span>`;
     // Подробности от сервиса — чтобы можно было переслать и понять причину
     const raw = [e.status ? "Код " + e.status : "", String(e.message || ""), ...(e.tried || [])].filter(Boolean).join("\n");
@@ -289,6 +337,7 @@ async function send(text, opts = {}) {
       const a = document.createElement("a"); a.className = "pill"; a.href = u; a.target = "_blank"; a.rel = "noopener"; a.textContent = t; box.append(a);
     });
     el.append(box);
+    userScrolled = false; showReply(el);   // ошибка, «Повторить» и поиск — на виду, а не под краем экрана
     if (opts.voice) throw Object.assign(new Error(m), { spoken: m });
     return "";
   } finally {
@@ -406,6 +455,9 @@ let talkOn = false, talkPhase = "idle", talkGen = 0;
 function talkSet(phase, text) {
   talkPhase = phase;
   $("#talkView").dataset.phase = phase;
+  // Ошибка (нет микрофона и т.п.) — вместо подсказки про круг предлагаем написать текстом
+  const err = phase === "idle" && !!text && !/^Нажми/.test(text);
+  $("#talkView").classList.toggle("err", err); $("#talkType").hidden = !err;
   $("#talkState").textContent = text || { listening: "Слушаю…", thinking: "Думаю…", speaking: "Говорю… (нажми, чтобы перебить)", idle: "Нажми на круг и говори", transcribing: "Распознаю…" }[phase];
 }
 function orbLevel(v) { $("#orbRing").style.transform = `scale(${1 + v * 0.45})`; }
@@ -415,7 +467,7 @@ function openTalk({ waitTap = false } = {}) {
   V.stopSpeaking(); if (busy) busy.abort();      // старый ответ не должен звучать в микрофон
   talkOn = true; $("#talkView").hidden = false; $("#talkText").textContent = "";
   $(".app").inert = true; setTimeout(() => $("#orb").focus(), 50);   // фокус — в окно разговора, приложение под ним недоступно
-  $("#talkBrain").textContent = (order()[0] ? BRAINS[order()[0]].name : "") + " · " + V.engineName();
+  const en = V.engineName(); $("#talkBrain").textContent = en.charAt(0).toUpperCase() + en.slice(1);   // без названий нейросетей — только чем говорю
   // При открытии приложения iPhone не даёт включить звук и микрофон без касания — ждём одно нажатие на круг
   if (waitTap) { talkGreet = true; talkSet("idle", "Нажми на круг и говори"); return; }
   talkLoop();
@@ -426,6 +478,7 @@ function closeTalk() {
   V.stopRecording(true); V.stopSpeaking(); if (busy) busy.abort(); idleStatus();
 }
 $("#talkClose").onclick = closeTalk;
+$("#talkType").onclick = () => { closeTalk(); $("#input").focus(); };
 $("#orb").onclick = () => {
   V.unlock();
   if (talkPhase === "speaking") { V.stopSpeaking(); return; }                  // перебить
@@ -440,7 +493,7 @@ function spokenGreeting() {
   const now = Date.now(), end = dayStart(new Date()) + 864e5;
   const today = D.tasks.filter(t => !t.done && t.due && t.due >= now && t.due < end).sort((a, b) => a.due - b.due);
   const tail = today.length ? ` Сегодня у тебя: ${today.slice(0, 2).map(t => t.text + " в " + hm(new Date(t.due))).join(", ")}.` : "";
-  const over = D.tasks.filter(t => !t.done && t.due && t.due < now && now - t.due < 7 * 864e5 && !t.repeat);
+  const over = D.tasks.filter(t => !t.done && t.notified && t.due && t.due < now && now - t.due < 7 * 864e5 && !t.repeat);
   const late = over.length ? ` Не закрыто с прошлого: ${over.slice(0, 2).map(t => t.text).join(", ")}${over.length > 2 ? " и ещё " + (over.length - 2) : ""} — сделано или перенести?` : "";
   return `${g}, Сумрак.${tail}${late} Слушаю тебя.`;
 }
@@ -532,19 +585,21 @@ function addToCalendar(t) {
   toast("Нажми «Добавить» в календаре. Оповещения: в момент события и за 10 минут.", 4000);
 }
 function checkReminders() {
-  const now = Date.now(); let changed = false;
+  const now = Date.now(); let changed = false; const fired = [];
   D.tasks.filter(t => !t.done && !t.notified && t.due && t.due <= now).forEach(t => {
     changed = true;
-    if (now - t.due < 864e5) {
-      t.notifiedAt = now;
-      const msg = "Сумрак, напоминаю: " + t.text;
-      toast("⏰ " + t.text); V.beep(); addMsg("ai", msg);
-      // Не говорим поверх записи (иначе напоминание попадёт в микрофон как фраза Сумрака)
-      // и не обрываем ответ, который сейчас звучит, — тогда хватит сигнала и сообщения
-      if (!talkOn && !V.isRecording() && !V.speaking() && !busy) V.speak(msg, { force: true });
-    }
+    if (now - t.due < 864e5) { t.notifiedAt = now; fired.push(t.text); }
     if (t.repeat) advanceTask(t); else t.notified = true;
   });
+  if (fired.length) {
+    // Несколько сразу (например, пока приложение было закрыто) — одним сообщением, одним сигналом
+    const msg = "Сумрак, напоминаю: " + (fired.length === 1 ? fired[0] : fired.map(t => "«" + t + "»").join(", "));
+    toast("⏰ " + (fired.length === 1 ? fired[0] : plural(fired.length, "напоминание", "напоминания", "напоминаний")), 8000);
+    V.beep(); addMsg("ai", msg);
+    // Не говорим поверх записи (иначе напоминание попадёт в микрофон как фраза Сумрака)
+    // и не обрываем ответ, который сейчас звучит, — тогда хватит сигнала и сообщения
+    if (!talkOn && !V.isRecording() && !V.speaking() && !busy) V.speak(msg, { force: true });
+  }
   if (changed) { persist(); renderTasks(); }
   armReminder();
 }
@@ -606,7 +661,8 @@ function renderMem() {
   emptyAfter("#insights", D.insights.length, "Выводы появятся, когда я узнаю тебя получше (обновляю раз в день).");
   const facts = activeFacts();
   $("#mstat").textContent = facts.length || "";
-  $("#facts").innerHTML = CATS.map(c => [c, facts.filter(f => f.cat === c).sort((a, b) => (b.imp || 5) - (a.imp || 5))]).filter(g => g[1].length)
+  // Неизвестная тема (например, из старой копии) — в «другое», иначе факт посчитан, но не виден
+  $("#facts").innerHTML = CATS.map(c => [c, facts.filter(f => (CATS.includes(f.cat) ? f.cat : "другое") === c).sort((a, b) => (b.imp || 5) - (a.imp || 5))]).filter(g => g[1].length)
     .map(([c, list]) => `<li class="grp">${esc(c)}</li>` + list.map(f => `<li class="row nocheck"><div class="tx">${esc(f.text)}<span class="due">${dots(f.imp)} · ${fmtAgo(f.ts)}</span></div><button class="x" data-forget="${esc(f.id)}" aria-label="Забыть">×</button></li>`).join("")).join("");
   emptyAfter("#facts", facts.length, "Пока ничего. Просто разговаривай со мной — я буду запоминать важное.");
   $("#diary").textContent = D.diary.text || "Пока пусто. Когда разговоров станет больше, здесь появится краткая история: о чём мы говорили и что решили.";
@@ -615,10 +671,20 @@ function renderLists() { renderTasks(); renderKnow(); renderMem(); }
 
 document.addEventListener("click", async e => {
   const t = e.target.closest("[data-del],[data-ios],[data-forget],[data-deldoc]"); if (!t) return;
-  if (t.dataset.del) { const [k, id] = t.dataset.del.split(":"); D[k] = D[k].filter(x => x.id !== id); }
-  if (t.dataset.forget) { const f = D.facts.find(x => x.id === t.dataset.forget); if (f) { f.status = "old"; f.validTo = Date.now(); } }
+  if (t.dataset.del) {
+    const [k, id] = t.dataset.del.split(":"); const i = D[k].findIndex(x => x.id === id);
+    if (i >= 0) { const [item] = D[k].splice(i, 1); undoable("Удалено", () => { D[k].splice(Math.min(i, D[k].length), 0, item); persist(); renderLists(); }); }
+  }
+  if (t.dataset.forget) {
+    const f = D.facts.find(x => x.id === t.dataset.forget);
+    if (f) { const was = f.status; f.status = "old"; f.validTo = Date.now(); undoable("Забыл", () => { f.status = was; delete f.validTo; persist(); renderLists(); }); }
+  }
   if (t.dataset.ios) { const task = D.tasks.find(x => x.id === t.dataset.ios); if (task) sendToIOS(task); return; }
-  if (t.dataset.deldoc) { await removeDoc(t.dataset.deldoc); }
+  if (t.dataset.deldoc) {
+    // Материал удаляется безвозвратно — второе касание для подтверждения
+    if (!t.dataset.armed) { t.dataset.armed = "1"; t.textContent = "Удалить?"; t.classList.add("armed"); setTimeout(() => { if (t.isConnected) { delete t.dataset.armed; t.textContent = "×"; t.classList.remove("armed"); } }, 4000); return; }
+    await removeDoc(t.dataset.deldoc);
+  }
   persist(); renderLists();
 });
 document.addEventListener("change", e => {
@@ -628,12 +694,15 @@ document.addEventListener("change", e => {
   else t.done = e.target.checked;
   persist(); renderTasks(); armReminder();
 });
+// Повтор имеет смысл только при выбранном времени
+$("#newDue").addEventListener("input", () => { $("#newRepeat").disabled = !$("#newDue").value; if (!$("#newDue").value) $("#newRepeat").value = ""; });
 $("#addTask").addEventListener("submit", e => {
   e.preventDefault(); const text = $("#newTask").value.trim(); if (!text) return;
   const due = $("#newDue").value ? parseLocal($("#newDue").value) : null;
-  const repeat = due && REPEAT_TXT[$("#newRepeat").value] ? $("#newRepeat").value : null;
+  const repeat = due && Object.hasOwn(REPEAT_TXT, $("#newRepeat").value) ? $("#newRepeat").value : null;
   D.tasks.push({ id: uid(), text, due, repeat, done: false, notified: false, ts: Date.now() }); persist(); renderTasks();
-  $("#newTask").value = ""; $("#newDue").value = ""; $("#newRepeat").value = "";
+  $("#newTask").value = ""; $("#newDue").value = ""; $("#newRepeat").value = ""; $("#newRepeat").disabled = true;
+  armReminder();
 });
 $("#addNote").addEventListener("submit", e => {
   e.preventDefault(); const text = $("#newNote").value.trim(); if (!text) return;
@@ -705,6 +774,7 @@ function fillVoices() {
   $("#iosVoice").value = vs.some(v => v.voiceURI === S.iosVoice) ? S.iosVoice : "";
 }
 function fillSettings() {
+  const lb = D.meta.lastBackup; $("#lastBackup").textContent = lb ? "Последняя копия — " + fmtAgo(lb) + "." : "Копии ещё не было.";
   TEXT_KEYS.forEach(k => { $("#" + k).value = S[k] || ""; });
   SELECT_KEYS.forEach(k => { const el = $("#" + k); if ([...el.options].some(o => o.value === S[k])) el.value = S[k]; });
   CHECK_KEYS.forEach(k => { $("#" + k).checked = !!S[k]; });
@@ -782,7 +852,7 @@ $("#diagBtn").onclick = async e => {
   }
   if (V.canRecord()) {
     try { const s = await navigator.mediaDevices.getUserMedia({ audio: true }); s.getTracks().forEach(t => t.stop()); add(true, "Микрофон", "доступ есть"); }
-    catch (err) { add(false, "Микрофон", err.name === "NotAllowedError" ? "доступ запрещён — разреши в настройках iPhone (Safari → Микрофон)" : String(err.message || err)); }
+    catch (err) { add(false, "Микрофон", err.name === "NotAllowedError" ? "доступ запрещён — разреши в настройках iPhone (Safari → Микрофон)" : err.name === "NotFoundError" ? "микрофон не найден — проверь, не подключены ли наушники без микрофона" : err.name === "NotReadableError" ? "микрофон занят другим приложением (звонок, запись) — закрой его" : "не удалось включить микрофон"); }
   } else add(false, "Микрофон", "запись звука не поддерживается");
   add(canTranscribe() ? true : V.SR ? null : false, "Распознавание речи", canTranscribe() ? "нейросетью (" + (configured().includes("gemini") && !isBlocked("gemini") ? "Gemini" : "Mistral") + ")" : V.SR ? "только встроенное iOS — в приложении с экрана «Домой» может не работать; подключи Gemini или Mistral" : "недоступно — подключи Gemini или Mistral");
   if (canTTS()) {
@@ -858,13 +928,16 @@ $("#form").addEventListener("submit", e => {
   if (!v && !photo) { if (busy) busy.abort(); else if (V.speaking()) { V.stopSpeaking(); syncSendBtn(); } return; }
   send(v);
 });
-function setTab(t) { if (t === "set") { if (backupVer !== dataVersion()) setTimeout(prepBackup, 400); fillSettings(); } document.body.dataset.tab = t; $$(".tabbar button").forEach(b => b.setAttribute("aria-selected", String(b.dataset.tab === t))); if (t === "chat") scrollDown(); }
+function setTab(t) { if (t === "set") { if (backupVer !== dataVersion()) setTimeout(prepBackup, 400); fillSettings(); } document.body.dataset.tab = t; $$(".tabbar button").forEach(b => b.setAttribute("aria-selected", String(b.dataset.tab === t))); if (t === "chat") { const c = $("#log .setup"); c ? c.scrollIntoView({ block: "start" }) : scrollDown(); } }
 $(".tabbar").addEventListener("click", e => { const b = e.target.closest("[data-tab]"); if (b) setTab(b.dataset.tab); });
 document.addEventListener("touchend", V.unlock, { once: true });
 document.addEventListener("click", V.unlock, { once: true });
 
 /* =================== Запуск =================== */
 $("#ver").textContent = "версия " + VERSION;
+const modesFade = () => { const m = $("#modes"); m.classList.toggle("more", m.scrollLeft + m.clientWidth < m.scrollWidth - 4); };
+$("#modes").addEventListener("scroll", modesFade, { passive: true }); addEventListener("resize", modesFade); setTimeout(modesFade, 100);
+["touchmove", "wheel"].forEach(ev => $("#log").addEventListener(ev, () => { if (busy) userScrolled = true; }, { passive: true }));
 setQuotaHandler(ok => toast(ok ? "Память телефона почти заполнена — я сократил старую переписку. Сделай резервную копию." : "Память телефона переполнена — последние изменения могли не сохраниться. Сделай копию и удали лишние материалы."));
 tickClock(); setInterval(tickClock, 1000);
 renderModes(); fillSettings(); fillGeminiModels(); fillVoices(); renderLists(); renderChat(); setTab("chat");
