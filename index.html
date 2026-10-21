@@ -144,7 +144,7 @@
         <label for="brain">Какую нейросеть использовать</label>
         <select id="brain">
           <option value="auto">Автоматически (лучшую доступную)</option>
-          <option value="gemini">Gemini</option><option value="mistral">Mistral</option><option value="zai">Z.ai GLM</option>
+          <option value="gemini">Gemini</option><option value="mistral">Mistral</option><option value="zai">Z.ai GLM</option><option value="openrouter">OpenRouter</option>
           <option value="claude">Claude</option><option value="custom">Своя</option>
         </select>
         <p class="small" id="brainNow"></p>
@@ -167,6 +167,11 @@
         <summary>Z.ai GLM — бесплатно, <b>без VPN</b> <span class="ok-mark" data-ok="zaiKey"></span></summary>
         <p class="small">Ключ: <a href="https://z.ai/manage-apikey/apikey-list" target="_blank" rel="noopener">z.ai</a> → API Keys. Бесплатная модель glm-4.7-flash.</p>
         <input id="zaiKey" type="password" autocomplete="off" placeholder="ключ Z.ai" aria-label="Ключ Z.ai">
+      </details>
+      <details class="field" id="d-openrouter">
+        <summary>OpenRouter — бесплатные модели (DeepSeek, Qwen, Llama) <span class="ok-mark" data-ok="openrouterKey"></span></summary>
+        <p class="small">Ещё один независимый бесплатный лимит. Регистрация: <a href="https://openrouter.ai" target="_blank" rel="noopener">openrouter.ai</a> (через Google или почту) → <a href="https://openrouter.ai/settings/keys" target="_blank" rel="noopener">Keys</a> → Create Key. Без пополнения — около 50 ответов в день; после разового пополнения на $10 — около 1000 в день (бесплатные модели деньги не тратят).</p>
+        <input id="openrouterKey" type="password" autocomplete="off" placeholder="sk-or-…" aria-label="Ключ OpenRouter">
       </details>
       <details class="field" id="d-claude">
         <summary>Claude — платный ключ <span class="ok-mark" data-ok="claudeKey"></span></summary>

@@ -1,7 +1,7 @@
 /* Дмитрий Павлов 3.0 — сборка интерфейса. */
 import { $, $$, uid, esc, md, plural, fmtDue, fmtAgo, isoLocal, hm, dayStart, todayKey, parseLocal, nextDue, pad, REPEAT_TXT, DAYS, MONTHS } from "./util.js";
 import { S, D, saveSettings, persist, exportAll, importAll, idbAll, setQuotaHandler } from "./store.js";
-import { chat, plain, order, anyBrain, configured, BRAINS, explain, discoverGemini, ping, canTranscribe, canTTS, isBlocked, ttsGemini } from "./brains.js";
+import { chat, plain, order, anyBrain, configured, BRAINS, explain, discoverGemini, ping, canTranscribe, canTTS, isBlocked, ttsGemini, discoverOpenRouter } from "./brains.js";
 // Признаки «не знаю свежего» в ответе модели без поиска
 const NOKNOW_RE = /(нет|не имею) (доступа|возможности)[^.]{0,30}(интернет|актуальн|свеж|реальн|текущ)|не могу (проверить|знать|посмотреть|найти)[^.]{0,25}(интернет|актуальн|текущ|сейчас|сегодня)|на момент (моего )?(обучения|последнего обновления)|(у меня )?нет (актуальн|свеж)[а-я]* (данных|информации|сведений)|не располагаю (актуальн|свеж)|мои (данные|знания) (ограничены|заканчиваются)|рекомендую (проверить|уточнить) на (официальн|сайт)/i;
 import { buildPrompt, MODES } from "./prompt.js";
@@ -9,7 +9,7 @@ import { relevantFacts, activeFacts, applyActions, stripActions, extractActions,
 import { addDoc, removeDoc, search, fromUrl, fromFile, ensureDocVecs, docsForPrompt } from "./knowledge.js";
 import * as V from "./voice.js";
 
-const VERSION = "3.6.2";
+const VERSION = "3.7.0";
 let mode = "auto", deep = false, photo = null, busy = null;
 
 /* =================== Часы и статус =================== */
@@ -627,7 +627,7 @@ $("#teachForm").addEventListener("submit", async e => {
 });
 
 /* =================== Настройки =================== */
-const TEXT_KEYS = ["geminiKey", "mistralKey", "zaiKey", "claudeKey", "claudeModel", "customBase", "customKey", "customModel", "tavilyKey"];
+const TEXT_KEYS = ["geminiKey", "mistralKey", "zaiKey", "openrouterKey", "claudeKey", "claudeModel", "customBase", "customKey", "customModel", "tavilyKey"];
 const SELECT_KEYS = ["brain", "geminiModel", "mistralModel", "voiceMode", "piperVoice", "liveVoice", "iosVoice", "sttMode"];
 const CHECK_KEYS = ["speakOn", "handsFree", "briefing", "autoReminders", "talkOnOpen"];
 function fillGeminiModels() {
@@ -660,6 +660,7 @@ function fillSettings() {
 TEXT_KEYS.forEach(k => $("#" + k).addEventListener("change", e => {
   S[k] = e.target.value.trim(); saveSettings(); fillSettings();
   if (k === "geminiKey" && S.geminiKey) discoverGemini(true).then(fillGeminiModels).catch(err => toast(explain(err)));
+  if (k === "openrouterKey" && S.openrouterKey) discoverOpenRouter(true).catch(() => {});
 }));
 SELECT_KEYS.forEach(k => $("#" + k).addEventListener("change", e => { S[k] = e.target.value; saveSettings(); fillSettings(); if (k === "voiceMode" || k === "piperVoice") updateLocal(); }));
 CHECK_KEYS.forEach(k => $("#" + k).addEventListener("change", e => { S[k] = e.target.checked; saveSettings(); if (k === "speakOn" && !S.speakOn) V.stopSpeaking(); }));
@@ -799,6 +800,7 @@ try { speechSynthesis.onvoiceschanged = fillVoices; } catch {}
 V.onSpeakingChange(syncSendBtn);
 setInterval(() => { checkReminders(); syncSendBtn(); }, 10000); checkReminders();
 if (S.geminiKey) discoverGemini().then(fillGeminiModels).catch(() => {});
+if (S.openrouterKey) discoverOpenRouter().catch(() => {});
 document.addEventListener("visibilitychange", () => { if (!document.hidden) { checkReminders(); V.audioCtx(); } else if (!talkOn) { micGen++; V.stopRecording(true); vbSet("idle"); } });
 // Любое касание экрана «будит» звук: iPhone разрешает играть звук только после касания
 ["touchend", "click"].forEach(ev => document.addEventListener(ev, () => V.unlock(), { capture: true, passive: true }));

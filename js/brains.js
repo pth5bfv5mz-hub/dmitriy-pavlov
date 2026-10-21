@@ -8,6 +8,7 @@ export const BRAINS = {
   gemini: { name: "Gemini", needs: "geminiKey" },
   mistral: { name: "Mistral", needs: "mistralKey" },
   zai: { name: "Z.ai GLM", needs: "zaiKey" },
+  openrouter: { name: "OpenRouter", needs: "openrouterKey" },
   claude: { name: "Claude", needs: "claudeKey" },
   custom: { name: "Своя нейросеть", needs: "customKey" },
 };
@@ -18,10 +19,12 @@ export const anyBrain = () => configured().length > 0;
 // Если Gemini не пустил (страна) — несколько минут не пробуем его первым.
 const blockedUntil = {};
 export const isBlocked = b => (blockedUntil[b] || 0) > Date.now();
-export function order() {
+export function order(fresh) {
   const list = configured();
   if (S.brain !== "auto" && list.includes(S.brain)) return [S.brain, ...list.filter(b => b !== S.brain)];
-  const pref = ["gemini", "claude", "mistral", "zai", "custom"].filter(b => list.includes(b));
+  // Обычный разговор — сначала мозги с большим объёмом (у Gemini бесплатных ответов всего несколько десятков в день);
+  // вопрос про свежее — сначала Gemini: у него поиск Google.
+  const pref = (fresh ? ["claude", "gemini", "mistral", "openrouter", "zai", "custom"] : ["claude", "mistral", "openrouter", "gemini", "zai", "custom"]).filter(b => list.includes(b));
   const late = b => isBlocked(b) || (b === "gemini" && geminiSpent());
   return [...pref.filter(b => !late(b)), ...pref.filter(late)];
 }
@@ -353,8 +356,28 @@ const COMPAT = {
   mistral: () => ({ url: "https://api.mistral.ai/v1/chat/completions", key: S.mistralKey, model: S.mistralModel || "mistral-medium-latest", vision: S.mistralModel || "mistral-medium-latest", lite: "mistral-small-latest",
     spare: ["mistral-small-latest", "ministral-8b-latest", "open-mistral-nemo"] }),
   zai: () => ({ url: "https://api.z.ai/api/paas/v4/chat/completions", key: S.zaiKey, model: S.zaiModel || "glm-4.7-flash", vision: "glm-4.6v-flash", lite: S.zaiModel || "glm-4.7-flash" }),
+  openrouter: () => {
+    const free = (D.meta.orFree && D.meta.orFree.ids) || OR_FREE;
+    const main = S.openrouterModel && S.openrouterModel !== "auto" ? S.openrouterModel : free[0];
+    return { url: "https://openrouter.ai/api/v1/chat/completions", key: S.openrouterKey, model: main, vision: main, lite: free[0], spare: free.slice(0, 5),
+      headers: { "HTTP-Referer": "https://pth5bfv5mz-hub.github.io/dmitriy-pavlov/", "X-Title": "Dmitriy Pavlov" } };
+  },
   custom: () => ({ url: S.customBase.trim().replace(/\/+$/, "") + "/chat/completions", key: S.customKey, model: S.customModel, vision: S.customModel, lite: S.customModel }),
 };
+/* Бесплатные модели OpenRouter: спрашиваем список у сервиса (раз в 3 дня), сильные — вперёд. */
+const OR_FREE = ["deepseek/deepseek-chat-v3-0324:free", "qwen/qwen3-235b-a22b:free", "meta-llama/llama-4-maverick:free", "google/gemma-3-27b-it:free", "mistralai/mistral-small-3.2-24b-instruct:free"];
+const OR_PREF = [/deepseek.*(chat|v3)/i, /qwen3.*(235|coder|max)/i, /deepseek.*r1/i, /llama-4/i, /gpt-oss/i, /qwen/i, /gemma/i, /mistral/i, /glm/i];
+export async function discoverOpenRouter(force) {
+  const c = D.meta.orFree;
+  if (!force && c && Date.now() - c.at < 3 * 864e5 && c.ids?.length) return c.ids;
+  try {
+    const j = await getJSON("https://openrouter.ai/api/v1/models");
+    const ids = (j.data || []).filter(m => /:free$/.test(m.id) && (m.context_length || 0) >= 32000 && !/vision|image|audio|embed|guard/i.test(m.id)).map(m => m.id)
+      .sort((a, b) => { const r = id => { const i = OR_PREF.findIndex(re => re.test(id)); return i < 0 ? 99 : i; }; return r(a) - r(b); });
+    if (ids.length) { D.meta.orFree = { at: Date.now(), ids: ids.slice(0, 12) }; persist(); return D.meta.orFree.ids; }
+  } catch {}
+  return (c && c.ids) || OR_FREE;
+}
 const TOOLS = [
   { type: "function", function: { name: "web_search", description: "Поиск в интернете: новости, цены, факты, события, люди, расписания. Возвращает выдержки и ссылки. Вызывай для всего, что могло измениться или в чём ты не уверен.", parameters: { type: "object", properties: { query: { type: "string", description: "поисковый запрос" } }, required: ["query"] } } },
   { type: "function", function: { name: "read_url", description: "Прочитать страницу по ссылке и вернуть её текст.", parameters: { type: "object", properties: { url: { type: "string" } }, required: ["url"] } } },
@@ -420,13 +443,13 @@ async function runTool(call, sources) {
 }
 // Mistral и Z.ai на бесплатном плане: 1 запрос в секунду. Разносим вызовы, чтобы не ловить 429.
 const lastCall = {};
-async function spacedFetch(brain, url, opts, signal) {
+async function spacedFetch(brain, url, opts, signal, retries = 1) {
   const gap = 1100, since = Date.now() - (lastCall[brain] || 0);
   if (since < gap) await sleep(gap - since);
-  for (let attempt = 0; attempt < 2; attempt++) {
+  for (let attempt = 0; attempt <= retries; attempt++) {
     lastCall[brain] = Date.now();
     const res = await fetch(url, opts);
-    if (res.status === 429 && attempt < 1) {   // одна короткая повторная попытка; дальше — другая модель
+    if (res.status === 429 && attempt < retries) {   // одна короткая повторная попытка; дальше — другая модель
       const ra = +(res.headers.get("retry-after") || 0);
       await sleep(Math.min(3000, ra ? ra * 1000 : 1500));
       if (signal && signal.aborted) throw new DOMException("aborted", "AbortError");
@@ -435,19 +458,26 @@ async function spacedFetch(brain, url, opts, signal) {
     return res;
   }
 }
+const noTools = new Set();
 async function chatCompat(brain, { system, hist, img, onText, onStatus, signal }) {
   const c = COMPAT[brain]();
   const messages = [{ role: "system", content: system }, ...hist.map(h => ({ role: h.role, content: h.text }))];
   if (img) { const last = messages[messages.length - 1]; last.content = [{ type: "text", text: last.content }, { type: "image_url", image_url: { url: img.url } }]; }
   const sources = [];
   // Запасные модели того же сервиса: у каждой своя очередь и свой лимит
-  const models = [...new Set([img ? c.vision : c.model, ...(img ? [] : c.spare || [])])].filter(Boolean);
+  const models = [...new Set([img ? c.vision : c.model, ...(img ? [] : c.spare || [])])].filter(Boolean).slice(0, 3);
   let mi = 0;
   for (let round = 0; round < 5; round++) {
     const body = { model: models[mi], messages, temperature: 0.5 };
     if (round < 4) body.tools = TOOLS;
-    const res = await spacedFetch(brain, c.url, { method: "POST", signal, headers: { "Content-Type": "application/json", "Authorization": "Bearer " + c.key.trim() }, body: JSON.stringify(body) }, signal);
-    if (!res.ok && (res.status === 429 || res.status >= 500) && mi < models.length - 1) { mi++; round--; continue; }
+    if (noTools.has(body.model)) delete body.tools;
+    const res = await spacedFetch(brain, c.url, { method: "POST", signal, headers: { "Content-Type": "application/json", "Authorization": "Bearer " + c.key.trim(), ...(c.headers || {}) }, body: JSON.stringify(body) }, signal, 0);
+    // Модель не умеет инструменты (бывает у бесплатных моделей OpenRouter) — та же модель без них
+    if (!res.ok && body.tools && (res.status === 400 || res.status === 404)) {
+      const t = await res.clone().text().catch(() => "");
+      if (/tool/i.test(t)) { noTools.add(body.model); round--; continue; }
+    }
+    if (!res.ok && (res.status === 429 || res.status >= 500 || (brain === "openrouter" && res.status === 404)) && mi < models.length - 1) { mi++; round--; continue; }
     if (!res.ok) await httpError(res, brain);
     const j = await res.json();
     const m = j.choices?.[0]?.message;
@@ -466,7 +496,7 @@ async function chatCompat(brain, { system, hist, img, onText, onStatus, signal }
 }
 async function plainCompat(brain, system, prompt) {
   const c = COMPAT[brain]();
-  const res = await spacedFetch(brain, c.url, { method: "POST", headers: { "Content-Type": "application/json", "Authorization": "Bearer " + c.key.trim() },
+  const res = await spacedFetch(brain, c.url, { method: "POST", headers: { "Content-Type": "application/json", "Authorization": "Bearer " + c.key.trim(), ...(c.headers || {}) },
     body: JSON.stringify({ model: c.lite, temperature: 0.2, messages: [{ role: "system", content: system }, { role: "user", content: prompt }] }) });
   if (!res.ok) await httpError(res, brain);
   const j = await res.json();
@@ -554,7 +584,8 @@ export async function chat(opts) {
   }
 }
 async function chatOnce(opts) {
-  const list = order(); let last; const all = [];
+  const lastUser = [...(opts.hist || [])].reverse().find(h => h.role === "user");
+  const list = order(!opts.img && (opts.wantSearch || FRESH_RE.test(lastUser ? lastUser.text : ""))); let last; const all = [];
   if (!list.length) throw new BrainError("Нет подключённой нейросети", 0, null);
   const hist = normHist(opts.hist);
   for (const b of list) {
@@ -570,6 +601,7 @@ async function chatOnce(opts) {
     } catch (e) {
       e.brain = e.brain || b; last = e; all.push(e);
       if (isLocationErr(e)) blockedUntil.gemini = Date.now() + 5 * 6e4;
+      if (e.status === 429 && b !== "gemini") blockedUntil[b] = Date.now() + (isDaily(e) ? 30 * 6e4 : Math.min(120e3, e.retryMs || 60e3));
       if (gotText || !shouldFallback(e)) throw e;
     }
   }
@@ -579,7 +611,10 @@ async function chatOnce(opts) {
 }
 export async function plain(system, prompt, opts) {
   let last;
-  for (const b of order()) {
+  // Фоновая работа (память, конспекты): сначала Gemini — там она идёт на Gemma и не тратит лимит ответов
+  const list = order(); const gi = list.indexOf("gemini");
+  if (gi > 0 && !isBlocked("gemini") && !geminiSpent()) list.unshift(...list.splice(gi, 1));
+  for (const b of list) {
     try { const t = b === "gemini" ? await plainGemini(system, prompt, opts) : b === "claude" ? await plainClaude(system, prompt) : await plainCompat(b, system, prompt); bump(b); return t; }
     catch (e) { e.brain = e.brain || b; last = e; if (!shouldFallback(e)) throw e; }
   }
@@ -592,11 +627,14 @@ export async function embed(texts, task) { return canEmbed() ? embedGemini(texts
 export const canTranscribe = () => (configured().includes("gemini") && !isBlocked("gemini")) || configured().includes("mistral");
 export async function transcribe(blob) {
   let last;
+  if (configured().includes("mistral") && !isBlocked("mistral-stt")) {
+    try { const t = await transcribeMistral(blob); if (t || !configured().includes("gemini")) return t; }
+    catch (e) { last = e; blockedUntil["mistral-stt"] = Date.now() + (e.status === 429 ? 5 : 30) * 6e4; }
+  }
   if (configured().includes("gemini") && !isBlocked("gemini")) {
     try { return await transcribeGemini(await blobB64(blob), (blob.type || "audio/mp4").split(";")[0]); }
     catch (e) { last = e; if (isLocationErr(e)) blockedUntil.gemini = Date.now() + 5 * 6e4; }
   }
-  if (configured().includes("mistral")) return transcribeMistral(blob);
   throw last || new BrainError("Для распознавания речи нужен Gemini или Mistral", 0, null);
 }
 export const canTTS = () => configured().includes("gemini") && !isBlocked("gemini");

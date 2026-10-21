@@ -6,10 +6,11 @@ export const save = (k, v) => { try { localStorage.setItem(LS + k, JSON.stringif
 try { navigator.storage && navigator.storage.persist && navigator.storage.persist(); } catch {}
 
 export const DEFAULTS = {
-  brain: "auto",                 // auto | gemini | mistral | zai | claude | custom
+  brain: "auto",                 // auto | gemini | mistral | zai | openrouter | claude | custom
   geminiKey: "", geminiModel: "auto",
   mistralKey: "", mistralModel: "mistral-medium-latest",
   zaiKey: "", zaiModel: "glm-4.7-flash",
+  openrouterKey: "", openrouterModel: "auto",
   claudeKey: "", claudeModel: "claude-sonnet-5-5",
   customBase: "", customKey: "", customModel: "",
   tavilyKey: "",
