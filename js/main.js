@@ -9,7 +9,7 @@ import { relevantFacts, activeFacts, applyActions, stripActions, extractActions,
 import { addDoc, removeDoc, search, fromUrl, fromFile, ensureDocVecs, docsForPrompt } from "./knowledge.js";
 import * as V from "./voice.js";
 
-const VERSION = "3.13.2";
+const VERSION = "3.13.3";
 let mode = "auto", deep = false, photo = null, busy = null, lastFail = "";
 
 /* =================== Часы и статус =================== */
@@ -442,6 +442,7 @@ $("#mic").onclick = async () => {
   V.beep(660, 1);
   try {
     const text = await V.listen({
+      silenceMs: pauseMs(), noSpeechMs: 12000,
       onStart: () => { if (gen === micGen) vbSet("listening", "Слушаю — говори", "Закончишь — я сам отправлю. Или нажми «Готово»"); },
       onSpeech: () => { if (gen === micGen) vbSet("heard", "Слышу тебя…", "Договори — пауза, и я отправлю"); },
       onLevel: v => { if (gen === micGen) vbLevel(v); },
@@ -469,7 +470,7 @@ function talkSet(phase, text) {
   // Ошибка (нет микрофона и т.п.) — вместо подсказки про круг предлагаем написать текстом
   const err = phase === "idle" && !!text && !/^Нажми/.test(text);
   $("#talkView").classList.toggle("err", err); $("#talkType").hidden = !err;
-  $("#talkState").textContent = text || { listening: "Слушаю…", thinking: "Думаю…", speaking: "Говорю… (нажми, чтобы перебить)", idle: "Нажми на круг и говори", transcribing: "Распознаю…" }[phase];
+  $("#talkState").textContent = text || { listening: "Слушаю… Договоришь — нажми на круг", thinking: "Думаю…", speaking: "Говорю… (нажми, чтобы перебить)", idle: "Нажми на круг и говори", transcribing: "Распознаю…" }[phase];
 }
 function orbLevel(v) { $("#orbRing").style.transform = `scale(${1 + v * 0.45})`; }
 $("#talk").onclick = () => { V.unlock(); openTalk(); };
@@ -521,7 +522,8 @@ async function talkLoop() {
   while (alive()) {
     talkSet("listening"); orbLevel(0);
     let text = "";
-    try { text = await V.listen({ onLevel: orbLevel, onTranscribing: () => talkSet("transcribing"), onInterim: t => { $("#talkText").textContent = t; } }); }
+    // Ждём паузу из настроек (по умолчанию 2,5 с) и до 15 с, пока Сумрак собирается с мыслями перед первой фразой
+    try { text = await V.listen({ silenceMs: pauseMs(), noSpeechMs: 15000, onLevel: orbLevel, onTranscribing: () => talkSet("transcribing"), onInterim: t => { $("#talkText").textContent = t; } }); }
     catch (e) { if (alive()) talkSet("idle", voiceErr(e)); return; }
     orbLevel(0);
     if (!alive()) return;
@@ -767,7 +769,9 @@ $("#teachForm").addEventListener("submit", async e => {
 
 /* =================== Настройки =================== */
 const TEXT_KEYS = ["geminiKey", "mistralKey", "zaiKey", "openrouterKey", "claudeKey", "claudeModel", "customBase", "customKey", "customModel", "tavilyKey"];
-const SELECT_KEYS = ["brain", "geminiModel", "mistralModel", "voiceMode", "piperVoice", "liveVoice", "iosVoice", "sttMode"];
+const SELECT_KEYS = ["brain", "geminiModel", "mistralModel", "voiceMode", "piperVoice", "liveVoice", "iosVoice", "sttMode", "talkPause"];
+/* Сколько тишины считать концом фразы (настройка «Сколько ждать…»): раньше было жёстко 1,3 с — обрывал на полуслове. */
+const pauseMs = () => Math.round(Math.min(8, Math.max(1, +S.talkPause || 2.5)) * 1000);
 const CHECK_KEYS = ["speakOn", "handsFree", "briefing", "autoReminders", "talkOnOpen"];
 function fillGeminiModels() {
   const m = D.meta.models; const sel = $("#geminiModel");

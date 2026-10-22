@@ -18,6 +18,7 @@ export const DEFAULTS = {
   piperVoice: "ru_RU-ruslan-medium", pace: 1.08,   // спокойный темп: чуть медленнее обычного
   liveVoice: "Charon", iosVoice: "", rate: 1.0,
   speakOn: true, handsFree: true, autoReminders: false, briefing: true,
+  talkPause: "2.5",               // сек тишины, после которых фраза считается законченной
   talkOnOpen: true,              // при открытии сразу экран разговора: одно касание — и он здоровается и слушает
   sttMode: "auto",               // auto | neural | ios
 };

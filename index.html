@@ -226,6 +226,11 @@
         <select id="sttMode"><option value="auto">Нейросетью (надёжно на iPhone)</option><option value="ios">Встроенное в iOS</option></select>
         <div class="row-btns"><button type="button" id="testVoice">Проверить голос</button></div>
       </div>
+      <div class="field">
+        <label for="talkPause">Сколько ждать, когда ты замолчал</label>
+        <select id="talkPause"><option value="1.5">1,5 секунды — быстро</option><option value="2.5">2,5 секунды (обычно)</option><option value="3.5">3,5 секунды — неторопливо</option><option value="5">5 секунд — когда долго обдумываешь</option></select>
+        <p class="small">После такой паузы я считаю, что ты договорил, и отвечаю. Можно не ждать — нажми на круг (или «Готово»).</p>
+      </div>
       <label class="check"><input type="checkbox" id="speakOn"> Отвечать голосом в чате</label>
       <label class="check"><input type="checkbox" id="handsFree"> В голосовом разговоре слушать дальше без нажатий</label>
       <label class="check"><input type="checkbox" id="talkOnOpen"> Открывать Дмитрия сразу в голосовом разговоре</label>
