@@ -114,7 +114,7 @@ export async function importAll(o) {
   if (next.facts) next.facts.forEach(f => { f.text = String(f.text || ""); f.cat = String(f.cat || "другое"); f.imp = clampNum(f.imp, 1, 10, 5); f.status = f.status === "old" ? "old" : "active"; f.used = f.used || f.ts || Date.now(); });
   if (next.facts) next.facts = next.facts.filter(f => f.text && f.id);
   if (next.tasks) next.tasks.forEach(t => { if (!Object.hasOwn(REPEAT_KEYS, t.repeat)) t.repeat = null; });
-  const chunks = Array.isArray(o.chunks) ? o.chunks.filter(c => isObj(c) && c.id && c.docId && typeof c.text === "string").map(c => ({ id: safeId(c.id), docId: safeId(c.docId), n: clampNum(c.n, 0, 1e7, 0), title: String(c.title || ""), text: c.text })) : null;
+  const chunks = Array.isArray(o.chunks) ? o.chunks.filter(c => isObj(c) && c.id && c.docId && typeof c.text === "string").map(c => ({ id: safeId(c.id), docId: safeId(c.docId), n: clampNum(c.n, -1, 1e7, 0), title: String(c.title || ""), text: c.text, ...(c.full ? { full: true } : {}) })) : null;
   if (next.docs && next.docs.length && !(chunks && chunks.length)) throw new Error("bad: docs without text");
   Object.assign(D, next);
   if (next.docs) {   // база знаний заменяется целиком — старые фрагменты и векторы убираем

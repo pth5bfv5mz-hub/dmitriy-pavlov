@@ -30,7 +30,7 @@ async function getIndex() {
   if (index && index.sig === signature()) return index;
   // Только фрагменты документов, которые есть в списке (остатки удалённых или прерванных — не в счёт)
   const ids = new Set(D.docs.map(d => d.id));
-  const chunks = (await idbAll("chunks")).filter(c => ids.has(c.docId));
+  const chunks = (await idbAll("chunks")).filter(c => ids.has(c.docId) && !c.full);   // полный текст — не фрагмент поиска
   const tokens = chunks.map(c => terms(c.title + " " + c.text));
   const df = new Map(); tokens.forEach(t => new Set(t).forEach(w => df.set(w, (df.get(w) || 0) + 1)));
   const tf = tokens.map(t => { const m = new Map(); t.forEach(w => m.set(w, (m.get(w) || 0) + 1)); return m; });
@@ -43,14 +43,18 @@ async function getIndex() {
 export const invalidate = () => { index = null; };
 
 /* ---------- Добавление ---------- */
-export async function addDoc(title, text, kind = "текст", { pages = 0, onProgress } = {}) {
+export async function addDoc(title, text, kind = "текст", { pages = 0, onProgress, background = false } = {}) {
   text = String(text || "").trim();
   if (text.length < 20) throw new Error("Слишком мало текста.");
   const docId = uid();
   const parts = chunkText(text);
   const chunks = parts.map((t, i) => ({ id: docId + ":" + i, docId, title, n: i, text: t }));
   onProgress && onProgress(`Сохраняю ${chunks.length} фрагментов…`);
-  try { for (let i = 0; i < chunks.length; i += 200) await idbPut("chunks", chunks.slice(i, i + 200)); }
+  try {
+    for (let i = 0; i < chunks.length; i += 200) await idbPut("chunks", chunks.slice(i, i + 200));
+    // Полный текст целиком — чтобы исправлять документ и проходить его от начала до конца, а не только искать отрывки
+    if (text.length <= 3e6) await idbPut("chunks", { id: docId + ":full", docId, n: -1, full: true, title, text });
+  }
   catch (e) { await idbDelDoc(docId).catch(() => {}); throw new Error("Не хватило места в памяти телефона для этого материала."); }
   const doc = { id: docId, title: String(title).slice(0, 120), kind, ts: Date.now(), chunks: chunks.length, chars: text.length, pages, vec: false, preview: text.slice(0, 200), summary: "" };
   D.docs.push(doc); persist(); invalidate();
@@ -60,8 +64,9 @@ export async function addDoc(title, text, kind = "текст", { pages = 0, onPr
     finally { embedding.delete(docId); }
   }
   if (anyBrain()) {
-    onProgress && onProgress("Делаю конспект…");
-    try { doc.summary = (await summarize(title, text)).trim().slice(0, 1500); persist(); } catch {}
+    onProgress && !background && onProgress("Делаю конспект…");
+    const p = summarize(title, text).then(s => { doc.summary = String(s || "").trim().slice(0, 1500); persist(); }).catch(() => {});
+    if (!background) await p;
   }
   invalidate();
   return doc;
@@ -86,7 +91,7 @@ export async function ensureDocVecs() {
   for (const d of D.docs.filter(d => !d.vec && !embedding.has(d.id))) {
     embedding.add(d.id);
     try {
-      const chunks = (await idbDocChunks(d.id)).sort((a, b) => a.n - b.n);
+      const chunks = (await idbDocChunks(d.id)).filter(c => !c.full).sort((a, b) => a.n - b.n);
       if (!chunks.length) continue;   // текст материала утерян — нечего считать
       await embedChunks(d, chunks);
       invalidate();
@@ -129,6 +134,32 @@ export async function search(query, k) {
   const score = new Map();
   [bm, vs].forEach(list => list.slice(0, 30).forEach((x, rank) => score.set(x.i, (score.get(x.i) || 0) + 1 / (60 + rank))));
   return [...score.entries()].sort((a, b) => b[1] - a[1]).slice(0, k).map(([i]) => ix.chunks[i]);
+}
+/* Полный текст материала (для старых материалов без него — склеиваем фрагменты). */
+export async function docFull(docId) {
+  const all = await idbDocChunks(docId);
+  const f = all.find(c => c.full); if (f) return f.text;
+  return all.filter(c => !c.full).sort((a, b) => a.n - b.n).map(c => c.text).join("\n\n");
+}
+/* Пройти весь большой документ частями: из каждой части нейросеть выписывает то, что нужно для задачи,
+   потом ответ строится по этой выжимке. 200 страниц ≈ 6–8 запросов (поэтому — только для задач «по всему документу»). */
+export async function deepPass(title, text, task, ask, { onProgress = () => {}, signal } = {}) {
+  const PART = 45000, parts = [];
+  for (let i = 0; i < text.length; i += PART) {
+    let end = Math.min(text.length, i + PART);
+    const cut = text.lastIndexOf("\n", end); if (end < text.length && cut > i + PART * 0.7) end = cut;   // не рвём абзац
+    parts.push(text.slice(i, end)); i = end - PART;
+  }
+  const notes = [];
+  for (let k = 0; k < parts.length; k++) {
+    if (signal && signal.aborted) throw new DOMException("aborted", "AbortError");
+    onProgress(k + 1, parts.length);
+    const pages = (parts[k].match(/\[стр\. (\d+)\]/g) || []).map(s => s.match(/\d+/)[0]);
+    const r = await ask(`Задача Сумрака: ${task}\n\nНиже часть ${k + 1} из ${parts.length} документа «${title}»${pages.length ? ` (стр. ${pages[0]}–${pages[pages.length - 1]})` : ""}.\nВыпиши из этой части ВСЁ, что нужно для задачи, — точно, с цифрами, датами и номерами страниц, без пересказа лишнего. Если в этой части нет ничего подходящего — ответь одним символом «—».\n\n${parts[k]}`);
+    const t = String(r || "").trim();
+    if (t && t !== "—" && t !== "-") notes.push(`[часть ${k + 1}${pages.length ? `, стр. ${pages[0]}–${pages[pages.length - 1]}` : ""}]\n${t}`);
+  }
+  return { parts: parts.length, notes: notes.join("\n\n") };
 }
 /* Список материалов с конспектами — чтобы Дмитрий знал, что у Сумрака есть. */
 export function docsForPrompt() {

@@ -222,13 +222,13 @@ let thinkOff = true;      // отключать «раздумья» 2.5-flash �
 // Поиск Google у бесплатного ключа — крошечная отдельная квота (~500/день, только на 2.5-flash).
 // Поэтому включаем его ТОЛЬКО когда вопрос явно про свежее/внешнее, а не на каждый «привет».
 const FRESH_RE = /новост|сейчас|сегодня|завтра|вчера|текущ|погод|курс|котировк|цен[аыу]|сколько стоит|стоит ли|прогноз|расписан|когда (выйд|будет|состо|начн|откро)|последн|актуальн|свеж|нынешн|202[4-9]|203\d|кто (сейчас|выиграл|победил|президент|глава)|результат|счёт матч|кто такой|что такое|where|погугли|найди|поищи|в интернете|ссылк|http/i;
-async function chatGemini({ system, hist, img, onText: show, onReset, signal, deep, wantSearch }) {
+async function chatGemini({ system, hist, img, onText: show, onReset, signal, deep, wantSearch, noSearch }) {
   let partial = false;
   const onText = t => { partial = true; show(t); };
   const base = { system_instruction: { parts: [{ text: system }] }, contents: gContents(hist, img), generationConfig: { temperature: deep ? 0.3 : 0.45 } };
   let last; const tried = [];
   const lastUser = [...hist].reverse().find(h => h.role === "user");
-  const wantNet = !img && (wantSearch || FRESH_RE.test(lastUser ? lastUser.text : ""));
+  const wantNet = !img && !noSearch && (wantSearch || FRESH_RE.test(lastUser ? lastUser.text : ""));
   const needSearch = wantNet && Date.now() > searchOffUntil;
   // Лимит поиска Google кончился — не отвечаем вслепую: подкладываем найденное запасным поиском (Tavily/Википедия, ссылки, погода)
   let extra = null;
@@ -518,7 +518,7 @@ async function spacedFetch(brain, url, opts, signal, retries = 1) {
   }
 }
 const noTools = new Set();
-async function chatCompat(brain, { system, hist, img, onText, onStatus, onReset, signal }) {
+async function chatCompat(brain, { system, hist, img, onText, onStatus, onReset, signal, noSearch }) {
   const c = COMPAT[brain]();
   const messages = [{ role: "system", content: system }, ...hist.map(h => ({ role: h.role, content: h.text }))];
   if (img) { const last = messages[messages.length - 1]; last.content = [{ type: "text", text: last.content }, { type: "image_url", image_url: { url: img.url } }]; }
@@ -530,7 +530,7 @@ async function chatCompat(brain, { system, hist, img, onText, onStatus, onReset,
   let mi = 0;
   for (let round = 0; round < 5; round++) {
     const body = { model: models[mi], messages, temperature: 0.4, stream: true };   // поток: текст появляется сразу
-    if (round < 4) body.tools = TOOLS;
+    if (round < 4 && !noSearch) body.tools = TOOLS;
     if (noTools.has(body.model)) delete body.tools;
     const res = await spacedFetch(brain, c.url, { method: "POST", signal, headers: { "Content-Type": "application/json", "Authorization": "Bearer " + c.key.trim(), ...(c.headers || {}) }, body: JSON.stringify(body) }, signal, 0);
     // Модель не умеет инструменты (бывает у бесплатных моделей OpenRouter) — та же модель без них
@@ -674,7 +674,7 @@ export async function chat(opts) {
 }
 async function chatOnce(opts) {
   const lastUser = [...(opts.hist || [])].reverse().find(h => h.role === "user");
-  const list = order(!opts.img && (opts.wantSearch || FRESH_RE.test(lastUser ? lastUser.text : ""))); let last; const all = [];
+  const list = order(!opts.img && !opts.noSearch && (opts.wantSearch || FRESH_RE.test(lastUser ? lastUser.text : ""))); let last; const all = [];
   if (!list.length) throw new BrainError("Нет подключённой нейросети", 0, null);
   const hist = normHist(opts.hist);
   for (const b of list) {

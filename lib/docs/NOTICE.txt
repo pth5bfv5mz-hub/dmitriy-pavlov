@@ -1,0 +1,5 @@
+Библиотеки для создания документов (Word, PDF) прямо на телефоне:
+- fflate 0.8.2 — MIT License, (c) 2023 Arjun Barrett — https://github.com/101arrowz/fflate
+- pdf-lib 1.17.1 — MIT License, (c) 2019 Andrew Dillon — https://github.com/Hopding/pdf-lib
+- @pdf-lib/fontkit 1.1.1 — MIT License, (c) Devon Govett — https://github.com/Hopding/fontkit
+- Шрифт DejaVu Sans 2.37 — Bitstream Vera / DejaVu license (свободная) — https://dejavu-fonts.github.io/License.html

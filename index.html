@@ -41,10 +41,11 @@
         <button type="button" class="vb-done" id="vbDone">Готово</button>
       </div>
       <div class="photo-prev" id="photoPrev" hidden><img id="photoImg" alt="Фото к сообщению"><span>Фото прикреплено</span><button type="button" class="x" id="photoDel" aria-label="Убрать фото">×</button></div>
+      <div class="photo-prev" id="docPrev" hidden><span class="doc-ico">📄</span><span id="docPrevText"></span><button type="button" class="x" id="docDel" aria-label="Убрать документ">×</button></div>
       <form class="composer" id="form">
-        <input type="file" id="photo" accept="image/*" hidden>
-        <button type="button" class="ib" id="photoBtn" title="Фото" aria-label="Прикрепить фото">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/></svg>
+        <input type="file" id="photo" accept="image/*,.pdf,.docx,.txt,.md,.csv,application/pdf,text/plain,application/vnd.openxmlformats-officedocument.wordprocessingml.document" hidden>
+        <button type="button" class="ib" id="photoBtn" title="Фото или документ" aria-label="Прикрепить фото или документ">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5l-8.6 8.6a5.5 5.5 0 0 1-7.8-7.8l8.6-8.6a3.7 3.7 0 0 1 5.2 5.2l-8.6 8.6a1.8 1.8 0 0 1-2.6-2.6l7.9-7.9"/></svg>
         </button>
         <textarea id="input" rows="1" placeholder="Сообщение…" aria-label="Сообщение"></textarea>
         <button type="button" class="ib" id="talk" title="Голосовой разговор" aria-label="Голосовой разговор">
@@ -242,6 +243,10 @@
       <h2>Напоминания iPhone</h2>
       <p class="small">Чтобы напоминания звенели при закрытом приложении, один раз создай команду «ДП Напоминание»: <a href="guide.html#reminders">инструкция</a>.</p>
       <div class="row-btns"><button type="button" id="testReminder">Проверить команду</button></div>
+
+      <h2>Команды iPhone</h2>
+      <p class="small">Будильник, таймер и раскладка файлов по папкам: скажи «поставь будильник на 7:30» — под ответом будет кнопка. Она запускает команду «ДП Действие» в приложении «Команды». Создай её один раз: <a href="guide.html#apps">инструкция</a>.</p>
+      <div class="row-btns"><button type="button" id="testAlarm">Проверить: таймер на 1 минуту</button></div>
 
       <h2>Проверка системы</h2>
       <p class="small">Если что-то не работает — нажми, и я покажу, что именно.</p>

@@ -219,3 +219,12 @@ details.field[open] summary{margin-bottom:6px}
 .row-btns button.danger{color:#b3261e;border-color:color-mix(in srgb,#b3261e 45%,var(--line))}
 @media (prefers-color-scheme:dark){.row-btns button.danger{color:#f2a19b}}
 .group-note{margin:6px 2px 0}
+.filecard{display:grid;grid-template-columns:auto 1fr;gap:4px 10px;align-items:center;margin-top:8px;padding:10px 12px;border:1px solid var(--field);border-radius:12px;background:var(--bg);max-width:420px}
+.filecard .fc-ico{font-size:26px;grid-row:span 1}
+.filecard .fc-meta{display:flex;flex-direction:column;min-width:0}
+.filecard .fc-meta b{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.filecard .fc-meta span{font-size:12.5px;color:var(--muted)}
+.filecard .acts{grid-column:1/-1;margin-top:4px}
+.pill.primary{background:var(--accent);color:var(--on-accent);border-color:var(--accent)}
+#docPrev .doc-ico{font-size:22px}
+#docPrev span#docPrevText{flex:1;min-width:0;font-size:13.5px}

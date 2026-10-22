@@ -103,7 +103,14 @@ export function advanceTask(t) {
   t.due = nextDue(t.due, t.repeat, t.anchor) || t.due; t.notified = false;
 }
 export function applyActions(act, userText, { temp } = {}) {
-  const out = { newTasks: [], remembered: [], learned: [], cards: 0 };
+  const out = { newTasks: [], remembered: [], learned: [], cards: 0, device: [] };
+  // Действия на iPhone через «Команды»: будильник, таймер, разложить файлы (только известные, с проверкой полей)
+  if (act && typeof act === "object") arr(act.device).slice(0, 3).forEach(d => {
+    if (!d || typeof d !== "object") return;
+    if (d.do === "alarm" && /^\d{1,2}:\d{2}$/.test(String(d.time || "").trim())) out.device.push({ do: "alarm", time: String(d.time).trim().padStart(5, "0"), label: String(d.label || "").slice(0, 60) });
+    else if (d.do === "timer" && +d.minutes > 0 && +d.minutes <= 1440) out.device.push({ do: "timer", minutes: Math.round(+d.minutes * 10) / 10 });
+    else if (d.do === "sort_files") out.device.push({ do: "sort_files" });
+  });
   if (!act || typeof act !== "object") return out;
   const now = Date.now();
   if (!temp) {
