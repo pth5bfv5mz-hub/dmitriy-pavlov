@@ -1,9 +1,9 @@
-/* База знаний: тексты, ссылки, документы и фото, которые Сумрак даёт Дмитрию «изучить».
+/* База знаний: тексты, ссылки, документы и фото, которые Дмитрий Павлович даёт Сумраку «изучить».
    Большие PDF и Word (сотни страниц) читаются прямо на телефоне — без нейросети и без лимитов.
    Текст режется на фрагменты; поиск — по словам (всегда) и по смыслу (векторы Gemini, если доступен),
    результаты объединяются (reciprocal rank fusion). Индекс строится один раз и держится в памяти. */
 import { D, S, persist, idbPut, idbAll, idbDelDoc, idbDocChunks } from "./store.js";
-import { uid, terms, cosine } from "./util.js";
+import { uid, terms, cosine, within } from "./util.js";
 import { embed, canEmbed, readUrl, plain, configured, isBlocked, anyBrain, gHeaders } from "./brains.js";
 
 function chunkText(text, size = 1100, overlap = 180) {
@@ -123,7 +123,7 @@ export async function search(query, k) {
   let vs = [];
   if (canEmbed() && ix.vecs.size) {
     try {
-      const r = await embed([query], "RETRIEVAL_QUERY");
+      const r = await within(embed([query], "RETRIEVAL_QUERY"), 800);   // не успели — только поиск по словам
       if (r) for (let i = 0; i < N; i++) {
         const v = ix.vecs.get(ix.chunks[i].id); if (!v || (v.m && v.m !== r.model)) continue;
         const s = cosine(r.vecs[0], v.v); if (s > 0.55) vs.push({ i, s });
@@ -155,13 +155,13 @@ export async function deepPass(title, text, task, ask, { onProgress = () => {}, 
     if (signal && signal.aborted) throw new DOMException("aborted", "AbortError");
     onProgress(k + 1, parts.length);
     const pages = (parts[k].match(/\[стр\. (\d+)\]/g) || []).map(s => s.match(/\d+/)[0]);
-    const r = await ask(`Задача Сумрака: ${task}\n\nНиже часть ${k + 1} из ${parts.length} документа «${title}»${pages.length ? ` (стр. ${pages[0]}–${pages[pages.length - 1]})` : ""}.\nВыпиши из этой части ВСЁ, что нужно для задачи, — точно, с цифрами, датами и номерами страниц, без пересказа лишнего. Если в этой части нет ничего подходящего — ответь одним символом «—».\n\n${parts[k]}`);
+    const r = await ask(`Задача Дмитрия Павловича: ${task}\n\nНиже часть ${k + 1} из ${parts.length} документа «${title}»${pages.length ? ` (стр. ${pages[0]}–${pages[pages.length - 1]})` : ""}.\nВыпиши из этой части ВСЁ, что нужно для задачи, — точно, с цифрами, датами и номерами страниц, без пересказа лишнего. Если в этой части нет ничего подходящего — ответь одним символом «—».\n\n${parts[k]}`);
     const t = String(r || "").trim();
     if (t && t !== "—" && t !== "-") notes.push(`[часть ${k + 1}${pages.length ? `, стр. ${pages[0]}–${pages[pages.length - 1]}` : ""}]\n${t}`);
   }
   return { parts: parts.length, notes: notes.join("\n\n") };
 }
-/* Список материалов с конспектами — чтобы Дмитрий знал, что у Сумрака есть. */
+/* Список материалов с конспектами — чтобы Сумрак знал, что у Дмитрия Павловича есть. */
 export function docsForPrompt() {
   return D.docs.slice(-15).map(d => `- «${d.title}» (${d.kind}${d.pages ? ", " + d.pages + " стр." : ""})${d.summary ? ": " + d.summary.slice(0, 350).replace(/\n+/g, " ") : ""}`).join("\n");
 }

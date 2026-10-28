@@ -17,9 +17,9 @@ export const DEFAULTS = {
   voiceMode: "local",            // local (нейросеть на телефоне) | live (Gemini) | ios
   piperVoice: "ru_RU-ruslan-medium", pace: 1.08,   // спокойный темп: чуть медленнее обычного
   liveVoice: "Charon", iosVoice: "", rate: 1.0,
-  speakOn: true, handsFree: true, autoReminders: false, briefing: true,
+  speakOn: true, handsFree: true, autoReminders: false, briefing: false,
   talkPause: "2.5",               // сек тишины, после которых фраза считается законченной
-  talkOnOpen: true,              // при открытии сразу экран разговора: одно касание — и он здоровается и слушает
+  talkOnOpen: false,             // при открытии — обычный чат; голос — по кнопке
   sttMode: "auto",               // auto | neural | ios
 };
 
@@ -36,6 +36,8 @@ function migrate(s) {
   if (!s.voiceMig35) { if (s.voiceMode === "live") s.voiceMode = "local"; s.voiceMig35 = true; }
   // 3.6: «Дмитрий» из Piper оказался высоковат — по умолчанию низкий спокойный «Руслан»
   if (!s.voiceMig36) { if (s.piperVoice === "ru_RU-dmitri-medium") { s.piperVoice = "ru_RU-ruslan-medium"; s.voiceSwitched = true; } s.voiceMig36 = true; }
+  // 4.0 «Сумрак»: проще — без голосового экрана при запуске и без утренней сводки (включаются в настройках)
+  if (!s.mig40) { s.talkOnOpen = false; s.briefing = false; s.mig40 = true; }
   return s;
 }
 export const S = Object.assign({}, DEFAULTS, migrate(load("settings", {})));
@@ -53,16 +55,38 @@ export const D = {
   mistakes: load("mistakes", []), // журнал недочётов: {id, what, why, fix, q, src, count, ts, last, status:'open'|'fixed'}
   insights: load("insights", []), // {id, text, ts}
   cards: load("cards", []),       // {id, q, a, topic, due, ivl, ease, reps, ts}
-  docs: load("docs", []),         // {id, title, kind, ts, chunks, chars}
+  docs: load("docs", []),         // {id, title, kind, ts, chunks, chars, project?}
+  projects: load("projects", []), // {id, name, ts} — рабочий контекст: дела, заметки, материалы, решения
   meta: load("meta", { lastTidy: 0, lastReflect: 0, lastBrief: "", impSinceReflect: 0, tempChat: false, models: null }),
 };
+/* 4.0: ассистента зовут «Сумрак», пользователя — «Дмитрий Павлович» (раньше было наоборот).
+   Накопленные память и переписка написаны в старых именах — переписываем их один раз,
+   иначе модель путала бы, кто есть кто. Сначала имя ассистента — во временную метку, потом имя пользователя, потом метку. */
+const FORMS = [["Дмитрий Павлов", "Сумрак"], ["Дмитрия Павлова", "Сумрака"], ["Дмитрию Павлову", "Сумраку"], ["Дмитрием Павловым", "Сумраком"], ["Дмитрии Павлове", "Сумраке"]];
+const USER = [["Сумрак", "Дмитрий Павлович"], ["Сумрака", "Дмитрия Павловича"], ["Сумраку", "Дмитрию Павловичу"], ["Сумраком", "Дмитрием Павловичем"], ["Сумраке", "Дмитрии Павловиче"]];
+const word = w => new RegExp("(^|[^\\p{L}])" + w + "(?![\\p{L}])", "gu");
+export function renameText(t) {
+  if (typeof t !== "string" || !t) return t;
+  FORMS.forEach(([a], i) => { t = t.replace(word(a), (m, p) => p + "\u0001" + i + "\u0002"); });
+  USER.forEach(([a, b]) => { t = t.replace(word(a), (m, p) => p + b); });
+  return t.replace(/\u0001(\d)\u0002/g, (m, i) => FORMS[+i][1]);
+}
+if (!D.meta.renamed40) {
+  const fix = (arr, keys) => arr.forEach(x => keys.forEach(k => { if (x && typeof x[k] === "string") x[k] = renameText(x[k]); }));
+  fix(D.msgs, ["text"]); fix(D.facts, ["text"]); fix(D.notes, ["text"]); fix(D.lessons, ["text"]); fix(D.insights, ["text"]);
+  fix(D.mistakes, ["what", "why", "fix", "q"]); fix(D.skills, ["name", "desc", "trigger", "steps"]); fix(D.cards, ["q", "a"]);
+  Object.keys(D.core).forEach(k => { D.core[k] = renameText(D.core[k]); });
+  D.diary.text = renameText(D.diary.text);
+  D.meta.renamed40 = true;
+  queueMicrotask(() => persist());
+}
 // Инкогнито живёт только до закрытия приложения: на диске его разговоров нет, флаг сбрасываем
 D.meta.tempChat = false;
 D.msgs = D.msgs.filter(m => !m.temp);
 // Старые факты без новых полей
 D.facts.forEach(f => { f.cat = f.cat || "другое"; f.imp = f.imp || 5; f.status = f.status || "active"; f.used = f.used || f.ts || Date.now(); });
 
-const KEYS = ["msgs", "facts", "core", "tasks", "notes", "diary", "skills", "lessons", "mistakes", "insights", "cards", "docs", "meta"];
+const KEYS = ["msgs", "facts", "core", "tasks", "notes", "diary", "skills", "lessons", "mistakes", "insights", "projects", "cards", "docs", "meta"];
 let onQuota = () => {};
 export const setQuotaHandler = f => { onQuota = f; };
 /* Сохранить всё. Если память телефона переполнена — ужимаем переписку и пробуем ещё раз. */

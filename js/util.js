@@ -18,6 +18,8 @@ export const REPEAT_TXT = { daily: "каждый день", weekdays: "по бу
 /* Убрать служебные метки действий из чужого текста (страницы, документы, результаты поиска) —
    чтобы подброшенный текст не выглядел для нейросети как её собственные команды. */
 export const neutralize = t => String(t || "").replace(/<<<\s*ACTIONS|ACTIONS\s*>>>/gi, "[…]");
+/* Не ждать дольше ms: результат или null (для необязательных шагов перед ответом — скорость важнее). */
+export const within = (p, ms) => Promise.race([Promise.resolve(p).catch(() => null), new Promise(r => setTimeout(() => r(null), ms))]);
 export const pad = n => String(n).padStart(2, "0");
 export const hm = d => pad(d.getHours()) + ":" + pad(d.getMinutes());
 export const ymd = d => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;

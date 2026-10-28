@@ -1,4 +1,4 @@
-/* «Мозги» Дмитрия: несколько нейросетей с автоматическим переключением.
+/* «Мозги» Сумрака: несколько нейросетей с автоматическим переключением.
    Gemini — самый умный (поиск Google, голос, распознавание речи, эмбеддинги), но из России только через VPN.
    Mistral и Z.ai — работают из России без VPN; для них поиск и погода сделаны инструментами. */
 import { S, D, persist } from "./store.js";
@@ -115,7 +115,7 @@ const byVer = (a, b) => ver(b) - ver(a) || a.length - b.length;
 // Для бесплатного ключа ставим вперёд проверенно-бесплатные модели, новейшие — в конец.
 const freeFirst = (ids, free) => [...free.filter(id => ids.includes(id)), ...ids.filter(id => !free.includes(id) && !/latest/.test(id)), ...ids.filter(id => /latest/.test(id))];
 /* Спрашиваем у Google, какие модели доступны этому ключу, и раскладываем по ролям.
-   Так Дмитрий не сломается, когда Google переименует модели. */
+   Так Сумрак не сломается, когда Google переименует модели. */
 export async function discoverGemini(force) {
   const cached = D.meta.models;
   if (!force && cached && Date.now() - cached.at < 3 * 864e5 && cached.chat?.length) return cached;
@@ -234,7 +234,7 @@ async function chatGemini({ system, hist, img, onText: show, onReset, signal, de
   let extra = null;
   const backup = async () => { if (!extra) extra = netContext(lastUser ? lastUser.text : "").catch(() => ({ text: "", sources: [] })); return extra; };
   // При любом отказе с поиском сразу отвечаем той же моделью без поиска, а не долбим квоту.
-  // Чтение страниц (url_context) — только когда Сумрак сам прислал ссылку: иначе подброшенная в поиске
+  // Чтение страниц (url_context) — только когда Дмитрий Павлович сам прислал ссылку: иначе подброшенная в поиске
   // инструкция могла бы заставить «открыть» чужой адрес с его данными в строке запроса.
   const userLink = /https?:\/\//i.test(lastUser ? lastUser.text : "");
   const toolSets = needSearch ? [[{ google_search: {} }, ...(userLink ? [{ url_context: {} }] : [])], undefined] : [undefined];
@@ -491,10 +491,10 @@ async function runTool(call, sources, allowed = new Set(), signal) {
     if (call.function.name === "get_weather") { sources.push({ url: "https://open-meteo.com", title: "Open-Meteo (погода)" }); return await toolWeather(String(a.city || "")); }
     if (call.function.name === "read_url") {
       const url = String(a.url || "");
-      // Открываем только ссылки от Сумрака или из найденного поиском — не те, что «подсказала» страница
-      // Только ссылки Сумрака или найденные поиском (погодный сервис — не «источник» для чтения)
+      // Открываем только ссылки от Дмитрия Павловича или из найденного поиском — не те, что «подсказала» страница
+      // Только ссылки Дмитрия Павловича или найденные поиском (погодный сервис — не «источник» для чтения)
       const ok = urlAllowed(url, [...allowed, ...sources.filter(x => !/open-meteo/.test(x.url)).map(x => x.url)].filter(Boolean));
-      if (!ok) return "Эту ссылку открыть нельзя: открываю только ссылки из сообщения Сумрака или из результатов поиска.";
+      if (!ok) return "Эту ссылку открыть нельзя: открываю только ссылки из сообщения Дмитрия Павловича или из результатов поиска.";
       const t = await readUrl(url); sources.push({ url, title: "" }); return t;
     }
     return await toolWebSearch(String(a.query || ""), sources, signal);

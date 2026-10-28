@@ -61,7 +61,7 @@ export function record({ onLevel, onSpeech, onStart, maxMs = 60000, silenceMs = 
     // Пока iPhone спрашивает разрешение на микрофон, запись уже можно отменить
     const pending = { cancelled: false, stop: () => { pending.cancelled = true; } };
     current = pending;
-    stopSpeaking();                 // никогда не записываем собственный голос Дмитрия
+    stopSpeaking();                 // никогда не записываем собственный голос Сумрака
     audioSession("play-and-record");
     let stream;
     try { stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } }); }
@@ -212,7 +212,7 @@ export function createSpeaker({ limit = 0 } = {}) {
     if (seg.audio) seg.audio.catch(() => {});
   };
   // Длинный кусок (ответ пришёл целиком) режем на фразы: звук первой готов быстрее, и речь начинается сразу.
-  // Первую фразу дополнительно укорачиваем по запятой — от её длины зависит, как скоро Дмитрий заговорит.
+  // Первую фразу дополнительно укорачиваем по запятой — от её длины зависит, как скоро Сумрак заговорит.
   const add = text => {
     const parts = sentences(speakable(text, true)).filter(Boolean);
     if (!segs.length && parts.length) {   // первая — одно предложение, а не склейка нескольких

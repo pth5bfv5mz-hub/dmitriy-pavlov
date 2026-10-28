@@ -1,14 +1,12 @@
-/* Дмитрий Павлов — минималистичный интерфейс. Разговор на весь экран, нижняя панель вкладок как в приложениях iOS. */
+/* Сумрак — тёмный графитовый интерфейс: спокойный, без визуального шума, удобный одной рукой.
+   Контраст проверен: основной текст ≥13:1, вторичный ≥5:1, рамки полей ≥3:1. */
 :root{
-  --bg:#f4f5f6; --surface:#ffffff; --line:#e1e4e8; --field:#868e98; --fg:#15181c; --muted:#68717b;
-  --accent:#2c4f78; --accent-soft:#e7edf5; --ok:#2f7a4f; --warn:#a45a12; --on-accent:#ffffff;
+  --bg:#0d0f11; --surface:#14171b; --raise:#1b1f24; --line:#252a30; --field:#66707b; --fg:#e6e8eb; --muted:#8b949e;
+  --accent:#9db8d9; --accent-soft:#1e2630; --ok:#6cc391; --warn:#e2a35c; --on-accent:#0d0f11;
   --font-body:-apple-system,"SF Pro Text","Onest",system-ui,"Segoe UI",Roboto,sans-serif;
   --font-mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
-  color-scheme:light;
+  color-scheme:dark;
 }
-@media (prefers-color-scheme:dark){:root{
-  --bg:#0f1113; --surface:#171a1e; --line:#272c32; --field:#67707b; --fg:#e7e9ec; --muted:#8a939d;
-  --accent:#8db2e0; --accent-soft:#1c2633; --ok:#6cc391; --warn:#e2a35c; --on-accent:#0f1113; color-scheme:dark}}
 
 *{box-sizing:border-box}
 html,body{height:100%;margin:0}
@@ -33,9 +31,6 @@ a{color:var(--accent)}
 .dot.warn{background:var(--warn)}
 .dot.listen{background:var(--warn);animation:pulse 1.4s ease-in-out infinite}
 @keyframes pulse{50%{opacity:.35}}
-.clock{text-align:right}
-.clock .t{font-family:var(--font-mono);font-size:22px;font-weight:500;font-variant-numeric:tabular-nums;line-height:1}
-.clock .d{color:var(--muted);font-size:12.5px;margin-top:3px}
 
 .views{flex:1;min-height:0;position:relative}
 .view{position:absolute;inset:0;display:none}
@@ -161,14 +156,8 @@ body[data-tab="mem"] #v-mem,body[data-tab="set"] #v-set,body[data-tab="know"] #v
 .memnote{margin-top:6px;font-size:12.5px;color:var(--muted)}
 .pill.on{border-color:var(--accent);color:var(--accent);background:var(--accent-soft)}
 .why{margin-top:8px}
-.modes{display:flex;gap:6px;overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:none;
-  padding:6px max(10px,env(safe-area-inset-right,0px)) 2px max(10px,env(safe-area-inset-left,0px));border-top:1px solid var(--line)}
-.modes::-webkit-scrollbar{display:none}
-/* Ряд листается вбок: правый край затухает — видно, что дальше есть ещё (пропадает, когда долистал) */
-.modes.more{-webkit-mask-image:linear-gradient(to right,#000 80%,transparent);mask-image:linear-gradient(to right,#000 80%,transparent)}
 .chip{flex:none;background:var(--bg);border:1px solid var(--line);border-radius:999px;padding:4px 12px;min-height:36px;font-size:13.5px;color:var(--muted);white-space:nowrap}
 .chip.on{background:var(--accent);border-color:var(--accent);color:var(--on-accent)}
-.modes .sep{flex:none;width:1px;background:var(--line);margin:2px 2px}
 .seg{display:flex;border:1px solid var(--line);border-radius:10px;overflow:hidden;background:var(--surface)}
 .seg button{flex:1;background:none;border:0;padding:9px 6px;font-size:14px;color:var(--muted)}
 .seg button[aria-pressed="true"]{background:var(--accent-soft);color:var(--accent);font-weight:600}
@@ -216,7 +205,7 @@ details.field[open] summary{margin-bottom:6px}
 .key-row{display:flex;gap:8px}.key-row input{flex:1;min-width:0}
 .more-key summary{cursor:pointer;color:var(--accent);font-size:14.5px}
 .more-key[open] summary{margin-bottom:6px}
-.row-btns button.danger{color:#b3261e;border-color:color-mix(in srgb,#b3261e 45%,var(--line))}
+.row-btns button.danger{color:#f2a19b;border-color:color-mix(in srgb,#b3261e 45%,var(--line))}
 @media (prefers-color-scheme:dark){.row-btns button.danger{color:#f2a19b}}
 .group-note{margin:6px 2px 0}
 .filecard{display:grid;grid-template-columns:auto 1fr;gap:4px 10px;align-items:center;margin-top:8px;padding:10px 12px;border:1px solid var(--field);border-radius:12px;background:var(--bg);max-width:420px}
@@ -228,3 +217,37 @@ details.field[open] summary{margin-bottom:6px}
 .pill.primary{background:var(--accent);color:var(--on-accent);border-color:var(--accent)}
 #docPrev .doc-ico{font-size:22px}
 #docPrev span#docPrevText{flex:1;min-width:0;font-size:13.5px}
+
+/* ---- 4.0: шапка с проектом, строка важного, меню, окна ---- */
+.top{align-items:center}
+.who h1{font-size:19px;letter-spacing:.01em}
+.proj-chip{display:flex;align-items:center;gap:6px;max-width:52%;min-height:36px;padding:6px 12px;border-radius:999px;border:1px solid var(--line);background:var(--surface);color:var(--muted);font-size:13.5px}
+.proj-chip span#projName{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.proj-chip .pc-ico{font-size:10px;opacity:.7}
+.proj-chip.on{color:var(--fg);border-color:color-mix(in srgb,var(--accent) 45%,var(--line))}
+.proj-chip.on .pc-ico{color:var(--accent);opacity:1}
+.brief{display:flex;flex-wrap:wrap;gap:4px 8px;padding:8px max(16px,env(safe-area-inset-right,0px)) 8px max(16px,env(safe-area-inset-left,0px));font-size:13px;color:var(--muted);border-bottom:1px solid var(--line);background:var(--surface)}
+.brief .sep{opacity:.5}
+.empty-chat{margin:auto;text-align:center;color:var(--muted);display:flex;flex-direction:column;gap:6px;max-width:30ch;padding:24px 0}
+.empty-chat b{color:var(--fg);font-size:18px;font-weight:600;letter-spacing:.02em}
+.msg.me{background:var(--raise);border:1px solid var(--line)}
+.msg.ai .by{display:flex;justify-content:flex-end;margin:0;height:0;overflow:visible}
+.msg.ai{position:relative;padding-right:30px}
+.msg.ai .more{position:absolute;top:-6px;right:-6px;width:36px;height:36px;border:0;background:none;color:var(--muted);font-size:18px;line-height:1;border-radius:10px;opacity:.75}
+.msg.ai .more:active{background:var(--raise)}
+.ptag{display:inline-block;margin-left:6px;font-size:11.5px;color:var(--accent);opacity:.85;white-space:nowrap}
+.sheet-back{position:fixed;inset:0;z-index:40;background:rgba(0,0,0,.45)}
+.sheet{position:fixed;left:0;right:0;bottom:0;z-index:41;max-width:760px;margin:0 auto;background:var(--raise);border:1px solid var(--line);border-bottom:0;border-radius:18px 18px 0 0;
+  padding:10px 12px calc(14px + env(safe-area-inset-bottom,0px));display:flex;flex-direction:column;gap:4px;max-height:80vh;overflow-y:auto;animation:sheetUp .18s ease-out}
+@keyframes sheetUp{from{transform:translateY(24px);opacity:0}}
+#msgMenu button{min-height:48px;text-align:left;padding:10px 14px;border:0;border-radius:12px;background:none;font-size:16px}
+#msgMenu button:active{background:var(--accent-soft)}
+#msgMenu .who{font-size:12.5px;color:var(--muted);padding:4px 14px}
+.sheet-h{display:flex;justify-content:space-between;align-items:center;padding:4px 4px 0}
+.sheet-h b{font-size:16px}
+.proj-line{display:flex;align-items:center;gap:4px}
+.proj-row{flex:1;display:flex;flex-direction:column;align-items:flex-start;gap:1px;text-align:left;min-height:52px;padding:8px 12px;border:1px solid var(--line);border-radius:12px;background:var(--surface);margin:3px 0;font-size:16px}
+.proj-row span{font-size:12.5px;color:var(--muted)}
+.proj-row.on{border-color:var(--accent);background:var(--accent-soft)}
+#projSheet .add{margin-top:6px}
+@media (prefers-reduced-motion:reduce){.sheet{animation:none}}
