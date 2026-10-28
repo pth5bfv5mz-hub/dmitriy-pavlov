@@ -1,4 +1,4 @@
-/* Документы, которые делает Сумрак: Word (.docx), PDF и текст — собираются прямо на телефоне,
+/* Документы, которые делает Дмитрий Павлов: Word (.docx), PDF и текст — собираются прямо на телефоне,
    без сервера. Источник — простой Markdown: заголовки (#), списки (-, 1.), **жирный**, *курсив*, таблицы (| a | b |).
    Библиотеки (fflate, pdf-lib, шрифт с кириллицей) грузятся только когда нужен документ; см. lib/docs/NOTICE.txt. */
 const LIB = new URL("../lib/docs/", import.meta.url).href;
@@ -74,7 +74,7 @@ export async function makeDocx(title, md) {
     "word/_rels/document.xml.rels": `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>`,
     "word/document.xml": doc,
     "word/styles.xml": styles,
-    "docProps/core.xml": `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:dcterms="http://purl.org/dc/terms/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"><dc:title>${xesc(title || "")}</dc:title><dc:creator>Сумрак</dc:creator><dcterms:created xsi:type="dcterms:W3CDTF">${new Date().toISOString().slice(0, 19)}Z</dcterms:created></cp:coreProperties>`,
+    "docProps/core.xml": `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:dcterms="http://purl.org/dc/terms/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"><dc:title>${xesc(title || "")}</dc:title><dc:creator>Дмитрий Павлов</dc:creator><dcterms:created xsi:type="dcterms:W3CDTF">${new Date().toISOString().slice(0, 19)}Z</dcterms:created></cp:coreProperties>`,
   };
   const zip = zipSync(Object.fromEntries(Object.entries(files).map(([k, v]) => [k, strToU8(v)])), { level: 6 });
   return new Blob([zip], { type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document" });
@@ -98,7 +98,7 @@ export async function makePdf(title, md) {
   pdf.registerFontkit(window.fontkit);
   const [reg, bold] = await fonts();
   const F = await pdf.embedFont(reg, { subset: true }), FB = await pdf.embedFont(bold, { subset: true });
-  pdf.setTitle(title || "Документ"); pdf.setCreator("Сумрак"); pdf.setLanguage("ru-RU");
+  pdf.setTitle(title || "Документ"); pdf.setCreator("Дмитрий Павлов"); pdf.setLanguage("ru-RU");
   const W = 595.28, H = 841.89, M = 56, maxW = W - 2 * M;
   let page, y;
   const newPage = () => { page = pdf.addPage([W, H]); y = H - M; };

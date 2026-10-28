@@ -1,5 +1,5 @@
 /* Память и обучение.
-   - Профиль (ядро): короткие блоки о Дмитрии Павловиче, всегда в контексте.
+   - Профиль (ядро): короткие блоки о Сумраке, всегда в контексте.
    - Факты: важность 1–10, тема, свежесть. В контекст попадают самые нужные (важность + свежесть + близость к теме).
    - Устаревшие факты не стираются, а помечаются «устарело» — так не теряется история.
    - Навыки («научись»), уроки (из поправок и оценок), выводы (рефлексия раз в день), дневник разговоров. */
@@ -45,6 +45,15 @@ async function embedFacts(list) {
   if (!canEmbed() || !list.length) return;
   try { const r = await embed(list.map(f => f.text), "RETRIEVAL_DOCUMENT"); if (r) await idbPut("vecs", list.map((f, i) => ({ id: "f:" + f.id, v: Array.from(r.vecs[i]), m: r.model }))); } catch {}
 }
+/* Исправить факт вручную: старый уходит в «устаревшее» (как при изменении факта в разговоре), новый — с той же темой и важностью. */
+export function editFact(id, text) {
+  const f = D.facts.find(x => x.id === id); text = String(text || "").trim();
+  if (!f || !text || text === f.text) return null;
+  f.status = "old"; f.validTo = Date.now();
+  const nf = { id: uid(), text: text.slice(0, 500), cat: f.cat, imp: f.imp, ts: Date.now(), used: Date.now(), status: "active" };
+  D.facts.push(nf); persist(); embedFacts([nf]);
+  return nf;
+}
 export async function ensureFactVecs() {
   if (!canEmbed()) return;
   try {
@@ -79,19 +88,19 @@ export function extractActions(text) {
   if (a < 0 || b < a) return null;
   try { return JSON.parse(body.slice(a, b + 1)); } catch { return null; }
 }
-// Навыки и уроки — только по явным словам Дмитрия Павловича: просьба научиться, поправка или подтверждение «да».
+// Навыки и уроки — только по явным словам Сумрака: просьба научиться, поправка или подтверждение «да».
 const TEACH_RE = /научись|научи(ть)?\s|запомни,?\s+как|навык|правил[оа]|впредь|в следующий раз|не так(?=[\s,.!?]|$)|неправильн|ошиб|поправ|исправь|никогда не|всегда (делай|отвечай|пиши|говори)|делай так/i;
 const CONFIRM_RE = /^\s*(да|ага|угу|верно|сохран\S*|подтверждаю|ок|окей|давай|точно)(?=[\s,.!?]|$)/i;
 /* Защита от «подброшенных» команд (prompt injection): текст со страницы или из документа может попросить
    нейросеть удалить данные или вписать себе правило. Поэтому разрушительные и «обучающие» действия
-   применяем, только если этого хотел сам Дмитрий Павлович, — по словам его сообщения, — и понемногу за раз. */
+   применяем, только если этого хотел сам Сумрак, — по словам его сообщения, — и понемногу за раз. */
 const DEL_INTENT_RE = /удал|убер|убра|(^|[^\p{L}])(сотри|сотрите|стереть|стёр|стер|снеси|снести)(?![\p{L}])|отмен|не нужн|забудь|забыть|забуд|очист|выкин|вычеркн|не напомин|хватит напомин|перестань напомин|не надо напомин|больше не напомин/iu;
 const DONE_INTENT_RE = /сделал|сделано|готово|выполн|закр(ой|ыл|ыть)|отмет|уже\s|купил|забрал|позвонил|сходил|отправил|оплатил|закончил|решил|выпил|принял|съел|прочитал|написал|получил/i;
 const FEEDBACK_RE = /^\s*нет(?![\p{L}])|не то(?![\p{L}])|не так(?![\p{L}])|не понял|опять|снова ты|я же |зачем ты|почему ты|не надо|ерунд|чушь|бред|плохо|неверн|неправил|ошиб|врёшь|врешь|выдум|не правда|неправда|поправ|исправ|впредь|в следующий раз/iu;
 const ALL_RE = /(^|[^\p{L}])(все|всё|весь|всех|целиком|список)(?![\p{L}])/iu;
 const capList = (list, userText) => list.slice(0, ALL_RE.test(userText || "") ? 50 : 2);
 const real = t => !!t && !/^\s*(\.{2,}|…|-|—)?\s*$/.test(t) && !/^\.\.\.|^…$/.test(t.trim());   // не заглушка «...» из образца
-/* userText — последнее сообщение Дмитрия Павловича. Навыки и уроки создаются только по его словам,
+/* userText — последнее сообщение Сумрака. Навыки и уроки создаются только по его словам,
    а не из найденных в интернете страниц (защита от «подброшенных» инструкций). */
 /* Отметить дело выполненным. Повторяющееся не закрываем — переносим на следующий раз. */
 export function completeTask(t) {
@@ -104,7 +113,8 @@ export function advanceTask(t) {
   t.due = nextDue(t.due, t.repeat, t.anchor) || t.due; t.notified = false;
 }
 export function applyActions(act, userText, { temp } = {}) {
-  const out = { newTasks: [], remembered: [], learned: [], cards: 0, device: [] };
+  const out = { newTasks: [], remembered: [], learned: [], cards: 0, device: [], removed: [], undo: [], done: [] };
+  const cut = t => (t = String(t || ""), t.length > 50 ? t.slice(0, 50) + "…" : t);
   // Действия на iPhone через «Команды»: будильник, таймер, разложить файлы (только известные, с проверкой полей)
   if (act && typeof act === "object") arr(act.device).slice(0, 3).forEach(d => {
     if (!d || typeof d !== "object") return;
@@ -126,9 +136,13 @@ export function applyActions(act, userText, { temp } = {}) {
   }
   const proj = D.projects.some(p => p.id === D.meta.currentProject) ? D.meta.currentProject : null;
   if (!temp) {
-    // Забывать факты можно, когда Дмитрий Павлович сказал «забудь» или факт изменился (не больше двух за раз)
+    // Забывать факты можно, когда Сумрак сказал «забудь» или факт изменился (не больше двух за раз)
     const forget = capList(arr(act.forget).map(String), DEL_INTENT_RE.test(userText || "") ? userText : "");
-    D.facts.forEach(f => { if (forget.includes(f.id) && f.status !== "old") { f.status = "old"; f.validTo = now; } });
+    D.facts.forEach(f => {
+      if (!forget.includes(f.id) || f.status === "old") return;
+      const was = f.status; f.status = "old"; f.validTo = now;
+      out.removed.push("факт «" + cut(f.text) + "»"); out.undo.push(() => { f.status = was; delete f.validTo; });
+    });
     const fresh = [];
     arr(act.remember).forEach(r => {
       const text = String(typeof r === "string" ? r : r && r.text || "").trim();
@@ -156,16 +170,20 @@ export function applyActions(act, userText, { temp } = {}) {
   });
   const delIntent = DEL_INTENT_RE.test(userText || "");
   const done = DONE_INTENT_RE.test(userText || "") || delIntent ? capList(arr(act.done).map(String), userText) : [];
-  D.tasks.forEach(t => { if (done.includes(t.id)) completeTask(t); });
-  const delT = delIntent ? capList(arr(act.delete_tasks).map(String), userText) : [];
-  D.tasks = D.tasks.filter(t => !delT.includes(t.id));
+  D.tasks.forEach(t => { if (done.includes(t.id)) { completeTask(t); out.done.push(t.text); } });
+  // Удалённое моделью можно вернуть одной кнопкой под ответом (удаление — действие с последствиями)
+  const drop = (key, ids, label, txt) => {
+    const gone = D[key].filter(x => ids.includes(x.id)); if (!gone.length) return;
+    D[key] = D[key].filter(x => !ids.includes(x.id));
+    gone.forEach(x => { out.removed.push(label + " «" + cut(txt(x)) + "»"); out.undo.push(() => { if (!D[key].some(y => y.id === x.id)) D[key].push(x); }); });
+  };
+  drop("tasks", delIntent ? capList(arr(act.delete_tasks).map(String), userText) : [], "дело", t => t.text);
   if (!temp) arr(act.notes).forEach(t => { t = String(typeof t === "string" ? t : t && t.text || "").trim(); if (real(t)) { D.notes.push({ id: uid(), text: t.slice(0, 4000), ts: now, ...(proj ? { project: proj } : {}) }); out.noted = (out.noted || 0) + 1; } });
-  const delN = delIntent ? capList(arr(act.delete_notes).map(String), userText) : [];
-  D.notes = D.notes.filter(n => !delN.includes(n.id));
-  // Навык — по «научись…», или по «да» в ответ на вопрос Сумрака «Сохранить?»
+  drop("notes", delIntent ? capList(arr(act.delete_notes).map(String), userText) : [], "заметка", n => n.text);
+  // Навык — по «научись…», или по «да» в ответ на вопрос Дмитрия Павлова «Сохранить?»
   const prevAi = [...D.msgs].reverse().find(m => m.role === "ai");
   const taught = !temp && (TEACH_RE.test(userText || "") || (CONFIRM_RE.test(userText || "") && /сохранить\s*\?|сохраняю\s*\?|запомнить так\s*\?/i.test(prevAi ? prevAi.text : "")));
-  // Недочёты и уроки — только в ответ на поправку или недовольство Дмитрия Павловича
+  // Недочёты и уроки — только в ответ на поправку или недовольство Сумрака
   const feedback = !temp && (FEEDBACK_RE.test(userText || "") || TEACH_RE.test(userText || ""));
   if (feedback) arr(act.mistakes).slice(0, 2).forEach(m => {
     const r = m && addMistake({ what: typeof m === "string" ? m : m.what, why: m.why, fix: m.fix, q: userText, src: "сам заметил в разговоре" });
@@ -185,7 +203,7 @@ export function applyActions(act, userText, { temp } = {}) {
       out.learned.push("навык «" + rec.name + "»");
     });
   }
-  if (delIntent && /навык|умени/i.test(userText || "")) capList(arr(act.forget_skills).map(String), userText).forEach(id => { D.skills = D.skills.filter(s => s.id !== id); });
+  if (delIntent && /навык|умени/i.test(userText || "")) drop("skills", capList(arr(act.forget_skills).map(String), userText), "навык", s => s.name);
   arr(act.used_skills).map(String).forEach(id => { const s = D.skills.find(x => x.id === id); if (s) s.uses = (s.uses || 0) + 1; });
   arr(act.cards).forEach(c => {
     if (!c || !real(String(c.q || "")) || !real(String(c.a || ""))) return;
@@ -222,26 +240,26 @@ export function contextStart(msgs, maxN = 30, maxChars = 16000) {
 export async function updateDiary() {
   const old = D.msgs.slice(0, contextStart(D.msgs)).filter(m => (m.ts || 0) > (D.diary.upTo || 0) && !m.temp);
   if (old.length < 10) return false;
-  const convo = old.map(m => `${m.role === "user" ? "Дмитрий Павлович" : "Сумрак"} (${m.ts ? isoLocal(m.ts) : ""}): ${m.text}`).join("\n").slice(-30000);
-  const res = await plain("Ты ведёшь дневник разговоров ассистента Сумрака с Дмитрием Павловичем. Пиши по-русски, сжато, только факты.",
-    `Текущая сводка:\n${D.diary.text || "(пусто)"}\n\nНовые разговоры:\n${convo}\n\nОбнови сводку: добавь главное из новых разговоров (темы, что Дмитрий Павлович решил, планировал, обещал, просил, что его беспокоило, чему учился; даты указывай). Старое сжимай, но не теряй важное. Не более 3000 символов. Верни только текст сводки.`);
+  const convo = old.map(m => `${m.role === "user" ? "Сумрак" : "Дмитрий Павлов"} (${m.ts ? isoLocal(m.ts) : ""}): ${m.text}`).join("\n").slice(-30000);
+  const res = await plain("Ты ведёшь дневник разговоров ассистента Дмитрия Павлова с Сумраком. Пиши по-русски, сжато, только факты.",
+    `Текущая сводка:\n${D.diary.text || "(пусто)"}\n\nНовые разговоры:\n${convo}\n\nОбнови сводку: добавь главное из новых разговоров (темы, что Сумрак решил, планировал, обещал, просил, что его беспокоило, чему учился; даты указывай). Старое сжимай, но не теряй важное. Не более 3000 символов. Верни только текст сводки.`);
   const t = String(res || "").trim();
   if (t.length > 20) { D.diary = { text: t.slice(0, 4500), upTo: old[old.length - 1].ts || Date.now() }; persist(); return true; }
   return false;
 }
-/* Раз в день (или когда набралось много важного): выводы о Дмитрии Павловиче и обновление профиля. */
+/* Раз в день (или когда набралось много важного): выводы о Сумраке и обновление профиля. */
 export async function reflect(force) {
   const coreBefore = JSON.stringify(D.core);
   const due = force || (D.meta.lastReflect || "") !== todayKey() && ((D.meta.impSinceReflect || 0) >= 30 || activeFacts().length >= 5);
   if (!due || activeFacts().length < 3) return false;
-  const res = await plain("Ты — аналитическая часть личного ассистента Сумрака. Пишешь кратко, по-русски, без выдумок: только то, что следует из данных. Отвечай только JSON.",
-    `Факты о Дмитрии Павловиче (тема, важность):\n${activeFacts().map(f => `- (${f.cat}, ${f.imp}) ${f.text}`).join("\n")}\n\nДневник разговоров:\n${D.diary.text || "(нет)"}\n\nТекущий профиль:\n${JSON.stringify(D.core)}\n\nПрежние выводы:\n${D.insights.map(i => "- " + i.text).join("\n") || "(нет)"}\n\nЗадача:
+  const res = await plain("Ты — аналитическая часть личного ассистента Дмитрия Павлова. Пишешь кратко, по-русски, без выдумок: только то, что следует из данных. Отвечай только JSON.",
+    `Факты о Сумраке (тема, важность):\n${activeFacts().map(f => `- (${f.cat}, ${f.imp}) ${f.text}`).join("\n")}\n\nДневник разговоров:\n${D.diary.text || "(нет)"}\n\nТекущий профиль:\n${JSON.stringify(D.core)}\n\nПрежние выводы:\n${D.insights.map(i => "- " + i.text).join("\n") || "(нет)"}\n\nЗадача:
 1) Перепиши профиль — 4 коротких блока (каждый до 600 символов): profile (кто он, чем живёт), goals (цели и планы), people (близкие и важные люди), preferences (как ему удобно общаться и получать помощь).
-2) Сделай до 3 новых глубоких выводов о Дмитрии Павловиче, которые помогут лучше ему помогать (закономерности, потребности, риски), только если они правда следуют из данных; не повторяй прежние.
+2) Сделай до 3 новых глубоких выводов о Сумраке, которые помогут лучше ему помогать (закономерности, потребности, риски), только если они правда следуют из данных; не повторяй прежние.
 Верни JSON: {"core":{"profile":"","goals":"","people":"","preferences":""},"insights":["..."]}`, { json: true });
   const j = parseJSON(res);
   if (!j || !j.core) return false;
-  // пока модель думала, Дмитрий Павлович мог сам поправить профиль — его правки важнее
+  // пока модель думала, Сумрак мог сам поправить профиль — его правки важнее
   if (JSON.stringify(D.core) === coreBefore) Object.keys(D.core).forEach(k => { const v = typeof j.core[k] === "string" ? j.core[k].trim() : ""; if (real(v)) D.core[k] = v.slice(0, 1200); });
   arr(j.insights).forEach(t => { t = String(t).trim(); if (real(t) && !D.insights.some(i => i.text === t)) D.insights.push({ id: uid(), text: t.slice(0, 400), ts: Date.now() }); });
   D.insights = D.insights.slice(-15);
@@ -250,7 +268,7 @@ export async function reflect(force) {
 }
 export async function tidyMemory() {
   const facts = activeFacts().filter(f => !f.pinned); if (facts.length < 3) return { ok: false, n: activeFacts().length };
-  const res = await plain("Ты наводишь порядок в памяти личного ассистента о его хозяине Дмитрии Павловиче. Отвечай только JSON.",
+  const res = await plain("Ты наводишь порядок в памяти личного ассистента о его хозяине Сумраке. Отвечай только JSON.",
     `Факты (от старых к новым):\n${facts.map(f => `- (${f.cat}, ${f.imp}) ${f.text}`).join("\n")}\n\nОбъедини дубли, убери противоречия (верным считай более новое), сформулируй кратко. Ничего важного не теряй и не выдумывай. Темы: ${CATS.join(", ")}. Важность 1–10.\nВерни JSON: {"facts":[{"text":"...","cat":"...","imp":5}]}`, { json: true });
   const j = parseJSON(res);
   const list = j && Array.isArray(j.facts) ? j.facts.filter(f => f && f.text) : null;
@@ -266,10 +284,10 @@ export async function tidyMemory() {
   embedFacts(fresh);
   return { ok: true, n: activeFacts().length };
 }
-/* Урок и запись в журнал недочётов из оценки 👎 и пояснения Дмитрия Павловича. */
+/* Урок и запись в журнал недочётов из оценки 👎 и пояснения Сумрака. */
 export async function lessonFromFeedback(question, answer, comment) {
-  const res = await plain("Ты помогаешь ассистенту Сумраку честно разбирать свои ошибки. Отвечай только JSON.",
-    `Вопрос Дмитрия Павловича: ${question}\nОтвет Сумрака: ${answer.slice(0, 3000)}\nСумраку не понравилось${comment ? ": " + comment : ""}.\nРазбери: what — что конкретно Сумрак сделал не так (одна фраза, от первого лица: «Я …»); why — почему так вышло; fix — короткое общее правило на будущее, применимое к похожим случаям (не пересказывай вопрос).\nВерни JSON: {"what":"...","why":"...","fix":"..."}`, { json: true });
+  const res = await plain("Ты помогаешь ассистенту Дмитрию Павлову честно разбирать свои ошибки. Отвечай только JSON.",
+    `Вопрос Сумрака: ${question}\nОтвет Дмитрия Павлова: ${answer.slice(0, 3000)}\nСумраку не понравилось${comment ? ": " + comment : ""}.\nРазбери: what — что конкретно Дмитрий Павлов сделал не так (одна фраза, от первого лица: «Я …»); why — почему так вышло; fix — короткое общее правило на будущее, применимое к похожим случаям (не пересказывай вопрос).\nВерни JSON: {"what":"...","why":"...","fix":"..."}`, { json: true });
   const j = parseJSON(res) || {};
   const fix = String(j.fix || j.lesson || "").trim();
   const what = String(j.what || "").trim() || (comment ? "Ответил не так, как нужно: " + comment : "");
@@ -279,7 +297,7 @@ export async function lessonFromFeedback(question, answer, comment) {
 }
 
 /* =================== Самоанализ: журнал недочётов ===================
-   Записи появляются четырьмя путями: Сумрак сам замечает ошибку в разговоре (поправка, недовольство),
+   Записи появляются четырьмя путями: Дмитрий Павлов сам замечает ошибку в разговоре (поправка, недовольство),
    оценка 👎, автоматические проверки ответа и ежедневная самопроверка переписки.
    Похожие недочёты не дублируются — растёт счётчик повторов. Не повторялся 14 дней — «исправлен». */
 // Сходство двух формулировок по корням слов (первые 4 буквы: «рублях» и «рубли» — одно и то же)
@@ -333,10 +351,10 @@ export async function selfReview(force) {
   const recent = D.msgs.filter(m => !m.temp && (m.ts || 0) > since).slice(-40);
   const due = force || ((D.meta.lastSelfReviewDay || "") !== todayKey() && recent.filter(m => m.role === "user").length >= 6);
   if (!due || recent.length < 2) return null;
-  const convo = recent.map(m => `${m.role === "user" ? "Дмитрий Павлович" : "Сумрак"}${m.rating === -1 ? " [Дмитрий Павлович поставил 👎]" : m.rating === 1 ? " [👍]" : ""}: ${String(m.text || "").slice(0, 700)}`).join("\n");
+  const convo = recent.map(m => `${m.role === "user" ? "Сумрак" : "Дмитрий Павлов"}${m.rating === -1 ? " [Сумрак поставил 👎]" : m.rating === 1 ? " [👍]" : ""}: ${String(m.text || "").slice(0, 700)}`).join("\n");
   const known = D.mistakes.slice(-15).map(m => "- " + m.what).join("\n") || "(пока нет)";
-  const res = await plain("Ты — строгий внутренний контролёр качества личного ассистента Сумрака. Честно, без самобичевания и без выдумок. Отвечай только JSON.",
-    `Переписка Сумрака с Дмитрием Павловичем:\n${convo}\n\nУже известные недочёты:\n${known}\n\nНайди реальные ошибки Сумрака в этой переписке — только те, что прямо видны из текста: неверные факты или расчёты; не понял, что просил Дмитрий Павлович (Дмитрий Павлович переспрашивал, поправлял, раздражался); обещал и не сделал; сказал «не могу», хотя мог; лишняя вода или слишком коротко; повторялся; не напомнил о важном; не поддержал, когда было нужно. Не пиши общих слабостей ИИ. Если ошибок нет — верни пустой список.\nДля каждой: what — что я сделал не так (от первого лица, конкретно, с сутью случая), why — почему, fix — правило на будущее.\nВерни JSON: {"mistakes":[{"what":"...","why":"...","fix":"..."}]} (не больше 5)`, { json: true });
+  const res = await plain("Ты — строгий внутренний контролёр качества личного ассистента Дмитрия Павлова. Честно, без самобичевания и без выдумок. Отвечай только JSON.",
+    `Переписка Дмитрия Павлова с Сумраком:\n${convo}\n\nУже известные недочёты:\n${known}\n\nНайди реальные ошибки Дмитрия Павлова в этой переписке — только те, что прямо видны из текста: неверные факты или расчёты; не понял, что просил Сумрак (Сумрак переспрашивал, поправлял, раздражался); обещал и не сделал; сказал «не могу», хотя мог; лишняя вода или слишком коротко; повторялся; не напомнил о важном; не поддержал, когда было нужно. Не пиши общих слабостей ИИ. Если ошибок нет — верни пустой список.\nДля каждой: what — что я сделал не так (от первого лица, конкретно, с сутью случая), why — почему, fix — правило на будущее.\nВерни JSON: {"mistakes":[{"what":"...","why":"...","fix":"..."}]} (не больше 5)`, { json: true });
   const j = parseJSON(res) || {};
   const added = arr(j.mistakes).slice(0, 5).map(m => m && addMistake({ what: m.what, why: m.why, fix: m.fix, src: "ежедневная самопроверка" })).filter(Boolean);
   D.meta.lastSelfReview = recent[recent.length - 1].ts || Date.now(); D.meta.lastSelfReviewDay = todayKey(); persist();

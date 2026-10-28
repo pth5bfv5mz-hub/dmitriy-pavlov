@@ -4,12 +4,12 @@
 <meta charset="utf-8">
 <meta name="robots" content="noindex,nofollow">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<title>Сумрак</title>
-<meta name="description" content="Личный ИИ-ассистент Дмитрия Павловича">
+<title>Дмитрий Павлов</title>
+<meta name="description" content="Личный ИИ-ассистент Сумрака">
 <meta name="theme-color" content="#0d0f11">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-title" content="Сумрак">
+<meta name="apple-mobile-web-app-title" content="Дмитрий">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="icons/icon-192.png">
@@ -20,7 +20,7 @@
 <div class="app">
   <header class="top">
     <div class="who">
-      <h1>Сумрак</h1>
+      <h1>Дмитрий Павлов</h1>
       <p><span class="dot" id="dot"></span><span id="status">Готовлюсь…</span></p>
     </div>
     <button type="button" class="proj-chip" id="projChip" aria-haspopup="dialog" aria-label="Проект"><span class="pc-ico" aria-hidden="true">◆</span><span id="projName">Без проекта</span></button>
@@ -29,7 +29,7 @@
   <main class="views">
     <!-- ============ Разговор ============ -->
     <section class="view chat" id="v-chat" aria-label="Разговор">
-      <div class="brief" id="brief" hidden></div>
+      <button type="button" class="brief" id="brief" hidden aria-label="Открыть дела"></button>
       <div class="log" id="log" aria-live="polite"></div>
       <div class="hint" id="hint" hidden></div>
       <div class="voicebar" id="voiceBar" data-st="starting" hidden role="status" aria-live="polite">
@@ -42,7 +42,7 @@
       <div class="photo-prev" id="photoPrev" hidden><img id="photoImg" alt="Фото к сообщению"><span>Фото прикреплено</span><button type="button" class="x" id="photoDel" aria-label="Убрать фото">×</button></div>
       <div class="photo-prev" id="docPrev" hidden><span class="doc-ico">📄</span><span id="docPrevText"></span><button type="button" class="x" id="docDel" aria-label="Убрать документ">×</button></div>
       <form class="composer" id="form">
-        <input type="file" id="photo" accept="image/*,.pdf,.docx,.txt,.md,.csv,application/pdf,text/plain,application/vnd.openxmlformats-officedocument.wordprocessingml.document" hidden>
+        <input type="file" id="photo" multiple accept="image/*,.pdf,.docx,.txt,.md,.csv,application/pdf,text/plain,application/vnd.openxmlformats-officedocument.wordprocessingml.document" hidden>
         <button type="button" class="ib" id="photoBtn" title="Фото или документ" aria-label="Прикрепить фото или документ">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5l-8.6 8.6a5.5 5.5 0 0 1-7.8-7.8l8.6-8.6a3.7 3.7 0 0 1 5.2 5.2l-8.6 8.6a1.8 1.8 0 0 1-2.6-2.6l7.9-7.9"/></svg>
         </button>
@@ -86,7 +86,7 @@
 
     <!-- ============ Память ============ -->
     <section class="view page" id="v-mem" aria-label="Память">
-      <h2>Профиль Дмитрия Павловича</h2>
+      <h2>Профиль Сумрака</h2>
       <p class="small">Главное о тебе — я держу это в голове всегда. Обновляю сам раз в день, можно поправить.</p>
       <div class="field">
         <label for="cProfile">Кто ты</label><textarea id="cProfile" rows="2"></textarea>
@@ -98,6 +98,7 @@
       <h2>Мои выводы о тебе</h2>
       <ul class="list" id="insights"></ul>
       <h2>Что я о тебе знаю <span id="mstat"></span></h2>
+      <p class="small">Запоминаю только важное и надолго: людей, цели, планы, привычки, предпочтения — не случайные фразы из разговора. Нажми на факт, чтобы исправить, × — забыть. Можно и словами: «исправь…», «забудь…».</p>
       <ul class="list" id="facts"></ul>
       <form class="add" id="addFact">
         <input id="newFact" placeholder="Добавить факт о себе" aria-label="Новый факт">
@@ -108,7 +109,7 @@
       <p class="diary" id="diary"></p>
     
       <!-- материалы, навыки, недочёты, уроки (раньше — отдельная вкладка «Знания») -->
-      <h2>Материалы: научить Сумрака</h2>
+      <h2>Материалы: научить Дмитрия Павлова</h2>
       <p class="small">Дай мне материал — я изучу его, сделаю конспект и буду опираться на него в ответах. PDF и Word на сотни страниц читаю прямо на телефоне. Или просто скажи в разговоре: «Научись…».</p>
       <div class="seg" id="teachSeg">
         <button type="button" data-k="text" aria-pressed="true">Текст</button>
@@ -200,7 +201,7 @@
 
       <h2>Голос</h2>
       <div class="field">
-        <label for="voiceMode">Чем говорит Сумрак</label>
+        <label for="voiceMode">Чем говорит Дмитрий Павлов</label>
         <select id="voiceMode">
           <option value="local">Нейросеть на телефоне — естественный голос, бесплатно, без лимитов (рекомендую)</option>
           <option value="live">Живой голос Gemini (маленький дневной лимит)</option>
@@ -234,18 +235,18 @@
       <label class="check"><input type="checkbox" id="incognito"> Инкогнито: этот разговор не запоминать (до закрытия приложения)</label>
       <label class="check"><input type="checkbox" id="speakOn"> Отвечать голосом в чате</label>
       <label class="check"><input type="checkbox" id="handsFree"> В голосовом разговоре слушать дальше без нажатий</label>
-      <label class="check"><input type="checkbox" id="talkOnOpen"> Открывать Сумрака сразу в голосовом разговоре</label>
+      <label class="check"><input type="checkbox" id="talkOnOpen"> Открывать Дмитрия Павлова сразу в голосовом разговоре</label>
 
       <h2>Поведение</h2>
       <label class="check"><input type="checkbox" id="briefing"> Утренняя сводка при первом открытии за день</label>
       <label class="check"><input type="checkbox" id="autoReminders"> Сразу отправлять новые напоминания в iPhone</label>
 
       <h2>Напоминания iPhone</h2>
-      <p class="small">Чтобы напоминания звенели при закрытом приложении, один раз создай команду «Сумрак Напоминание»: <a href="guide.html#reminders">инструкция</a>.</p>
+      <p class="small">Чтобы напоминания звенели при закрытом приложении, один раз создай команду «ДП Напоминание»: <a href="guide.html#reminders">инструкция</a>.</p>
       <div class="row-btns"><button type="button" id="testReminder">Проверить команду</button></div>
 
       <h2>Команды iPhone</h2>
-      <p class="small">Будильник, таймер и раскладка файлов по папкам: скажи «поставь будильник на 7:30» — под ответом будет кнопка. Она запускает команду «Сумрак Действие» в приложении «Команды». Создай её один раз: <a href="guide.html#apps">инструкция</a>.</p>
+      <p class="small">Будильник, таймер и раскладка файлов по папкам: скажи «поставь будильник на 7:30» — под ответом будет кнопка. Она запускает команду «ДП Действие» в приложении «Команды». Создай её один раз: <a href="guide.html#apps">инструкция</a>.</p>
       <div class="row-btns"><button type="button" id="testAlarm">Проверить: таймер на 1 минуту</button></div>
 
       <h2>Проверка системы</h2>

@@ -136,7 +136,7 @@ let queue = Promise.resolve();
 /* Синтез фразы → { pcm: Float32Array, rate }. Фразы идут по очереди (одна модель в памяти). */
 export function synth(text, id, { pace = 1, isStale } = {}) {
   const job = queue.then(async () => {
-    if (isStale && isStale()) throw new Error("stale");   // Сумрак перебил — старые фразы не синтезируем
+    if (isStale && isStale()) throw new Error("stale");   // Дмитрий Павлов перебил — старые фразы не синтезируем
     await ensure(id);
     const ids = await phonemize(text, (cfg.espeak && cfg.espeak.voice) || "ru");
     const inf = cfg.inference || {};

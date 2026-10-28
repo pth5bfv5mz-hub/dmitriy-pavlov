@@ -1,16 +1,16 @@
-/* Сумрак 3.0 — сборка интерфейса. */
+/* Дмитрий Павлов 3.0 — сборка интерфейса. */
 import { $, $$, uid, esc, md, plural, fmtDue, fmtAgo, isoLocal, hm, dayStart, todayKey, parseLocal, nextDue, pad, REPEAT_TXT, DAYS, MONTHS } from "./util.js";
 import { S, D, saveSettings, persist, exportAll, importAll, idbAll, setQuotaHandler, dataVersion } from "./store.js";
 import { chat, plain, order, anyBrain, configured, BRAINS, explain, discoverGemini, ping, canTranscribe, canTTS, isBlocked, ttsGemini, discoverOpenRouter, isKeyErr } from "./brains.js";
 // Признаки «не знаю свежего» в ответе модели без поиска
 const NOKNOW_RE = /(нет|не имею) (доступа|возможности)[^.]{0,30}(интернет|актуальн|свеж|реальн|текущ)|не могу (проверить|знать|посмотреть|найти)[^.]{0,25}(интернет|актуальн|текущ|сейчас|сегодня)|на момент (моего )?(обучения|последнего обновления)|(у меня )?нет (актуальн|свеж)[а-я]* (данных|информации|сведений)|не располагаю (актуальн|свеж)|мои (данные|знания) (ограничены|заканчиваются)|рекомендую (проверить|уточнить) на (официальн|сайт)/i;
 import { buildPrompt } from "./prompt.js";
-import { relevantFacts, activeFacts, applyActions, stripActions, extractActions, contextStart, updateDiary, reflect, tidyMemory, lessonFromFeedback, completeTask, advanceTask, selfCheck, selfReview, openMistakes, ensureFactVecs, dueCards, gradeCard, CATS } from "./memory.js";
+import { relevantFacts, activeFacts, applyActions, stripActions, extractActions, contextStart, updateDiary, reflect, tidyMemory, lessonFromFeedback, completeTask, advanceTask, selfCheck, selfReview, openMistakes, ensureFactVecs, editFact, dueCards, gradeCard, CATS } from "./memory.js";
 import { addDoc, removeDoc, search, fromUrl, fromFile, ensureDocVecs, docsForPrompt, docFull, deepPass } from "./knowledge.js";
 import { extractFiles, makeFile, shareFile, fileName, FORMATS } from "./files.js";
 import * as V from "./voice.js";
 
-const VERSION = "4.0.0";
+const VERSION = "4.1.0";
 let photo = null, busy = null, lastFail = "";
 
 /* =================== Статус и проект =================== */
@@ -58,7 +58,7 @@ function undoable(text, undo) {
 /* =================== Чат =================== */
 const scrollDown = () => { const l = $("#log"); l.scrollTop = l.scrollHeight; };
 /* Показать ответ: короткий — прокрутить вниз; длинный (выше экрана) — держать его начало вверху,
-   чтобы читать с первой строки, а не искать её. Если Дмитрий Павлович сам листает — не мешаем. */
+   чтобы читать с первой строки, а не искать её. Если Сумрак сам листает — не мешаем. */
 let userScrolled = false;
 function showReply(el) {
   if (userScrolled) return;
@@ -124,6 +124,13 @@ function askWhy(el, msg) {
   el.append(f); f.querySelector("input").focus();
   setTimeout(() => f.scrollIntoView({ block: "nearest", behavior: "smooth" }), 300);   // после появления клавиатуры
 }
+/* Что модель удалила по просьбе — видно под ответом, и это можно вернуть. */
+function addUndoNote(el, out) {
+  const n = document.createElement("div"); n.className = "memnote";
+  n.textContent = "🗑 Удалил: " + out.removed.join("; ") + " ";
+  n.append(pill("↩ Вернуть", () => { out.undo.forEach(u => u()); persist(); renderLists(); armReminder(); n.textContent = "↩ Вернул: " + out.removed.join("; "); }));
+  el.append(n);
+}
 function renderChat() {
   $("#log").innerHTML = "";
   D.msgs.slice(-60).forEach(m => {
@@ -136,7 +143,7 @@ function renderChat() {
   if (!anyBrain()) return showSetupCard();
   if (S.briefing && D.meta.lastBrief !== todayKey() && !D.meta.tempChat) showBriefing();
   // Без приветствия при каждом открытии: пустой разговор — короткая подсказка, а не сообщение
-  if (!D.msgs.length) { const e = document.createElement("div"); e.className = "empty-chat"; e.innerHTML = "<b>Сумрак</b><span>Пиши или говори — 🎤 одна фраза, ≋ разговор голосом. Файлы — через 📎.</span>"; $("#log").append(e); }
+  if (!D.msgs.length) { const e = document.createElement("div"); e.className = "empty-chat"; e.innerHTML = "<b>Дмитрий Павлов</b><span>Пиши или говори — 🎤 одна фраза, ≋ разговор голосом. Файлы — через 📎.</span>"; $("#log").append(e); }
 }
 /* Строка важного над перепиской: просроченное и ближайшее сегодня. Не сообщение и не приветствие —
    ничего не пишет в историю и пропадает, когда нечего сказать. */
@@ -147,11 +154,12 @@ function renderBrief() {
   const next = open.filter(t => t.due >= now && t.due < end).sort((a, b) => a.due - b.due)[0];
   const parts = [];
   if (over.length) parts.push(`Просрочено: ${over.slice(0, 2).map(t => "«" + esc(t.text) + "»").join(", ")}${over.length > 2 ? " и ещё " + (over.length - 2) : ""}`);
-  if (next) parts.push(`Дальше сегодня: ${esc(next.text)} в ${hm(new Date(next.due))}`);
+  if (next) { const min = Math.ceil((next.due - now) / 6e4); parts.push(min <= 60 ? `Через ${min} мин: ${esc(next.text)}` : `Дальше сегодня: ${esc(next.text)} в ${hm(new Date(next.due))}`); }
   $("#brief").hidden = !parts.length;
   $("#brief").innerHTML = parts.join('<span class="sep">·</span>');
 }
-/* Если Сумрак сам что-то спросил (например, о незакрытых делах) — кладём это в историю,
+$("#brief").onclick = () => setTab("tasks");
+/* Если Дмитрий Павлов сам что-то спросил (например, о незакрытых делах) — кладём это в историю,
    иначе на ответ «перенеси на завтра» нейросеть не поймёт, о чём речь. */
 function rememberAsk(text) {
   if (!/Не закрыто/.test(text) || D.meta.tempChat) return;
@@ -163,9 +171,9 @@ function rememberAsk(text) {
 let pendingAsk = "", pendingImg = null;   // вопрос (и фото), заданные до подключения, — отвечу сразу после
 function showSetupCard() {
   const el = document.createElement("div"); el.className = "msg ai setup";
-  el.innerHTML = `<div class="by">Сумрак</div>
+  el.innerHTML = `<div class="by">Дмитрий Павлов</div>
     <div class="card">
-      <h3>Привет, Дмитрий Павлович. Подключи мне нейросеть — это бесплатно</h3>
+      <h3>Привет, Сумрак. Подключи мне нейросеть — это бесплатно</h3>
       <ol class="steps">
         <li>Открой сайт Mistral (работает из России без VPN): <a class="pill" href="https://console.mistral.ai/api-keys" target="_blank" rel="noopener">Открыть Mistral</a></li>
         <li>Войди (через Google или почту), выбери бесплатный план и подтверди номер телефона.</li>
@@ -231,7 +239,7 @@ function showBriefing() {
   if (cards) lines.push(`**Повторить:** ${plural(cards, "карточку", "карточки", "карточек")}`);
   if (D.core.goals) lines.push("**Твои цели:** " + D.core.goals.slice(0, 160) + (D.core.goals.length > 160 ? "…" : ""));
   const ins = D.insights[D.insights.length - 1]; if (ins) lines.push("**Мысль:** " + ins.text);
-  const el = addMsg("ai", `${g}, Дмитрий Павлович. ${lines.length ? "Коротко о дне:\n" + lines.join("\n") : "Дел на сегодня нет — день свободен. Чем займёмся?"}`);
+  const el = addMsg("ai", `${g}, Сумрак. ${lines.length ? "Коротко о дне:\n" + lines.join("\n") : "Дел на сегодня нет — день свободен. Чем займёмся?"}`);
   const box = document.createElement("div"); box.className = "acts";
   box.append(pill("🗓 Спланировать день", () => send("Помоги спланировать сегодняшний день с учётом моих дел и целей.")));
   if (cards) box.append(pill("🃏 Повторить карточки", startReview));
@@ -243,7 +251,8 @@ async function send(text, opts = {}) {
   text = String(text || "").trim();
   const img = "img" in opts ? opts.img : (opts.voice ? null : photo);
   if (!text && img) text = "Посмотри на фото и помоги.";
-  if (!text && focusDoc && focusDoc.fresh && !opts.retry) text = "Посмотри этот документ: о чём он и что в нём главное — кратко.";
+  const freshDocs = focusDocs.filter(d => d.fresh);
+  if (!text && freshDocs.length && !opts.retry) text = freshDocs.length > 1 ? "Посмотри эти документы: о чём каждый и чем они отличаются — кратко." : "Посмотри этот документ: о чём он и что в нём главное — кратко.";
   if (!text) return "";
   if (busy) busy.abort();
   if (!opts.voice) { V.stopSpeaking(); if (micSt !== "idle") { micGen++; vbSet("idle"); } V.stopRecording(true); }
@@ -253,8 +262,8 @@ async function send(text, opts = {}) {
     $("#input").value = ""; autosize();
     if (!opts.voice) { photo = null; showPhoto(); }
     addMsg("me", text, { img: img && img.url, temp });
-    const docTag = focusDoc && focusDoc.fresh ? focusDoc.title : "";
-    if (docTag) { focusDoc.fresh = false; showDoc(""); const s = document.createElement("div"); s.className = "small"; s.textContent = "📄 " + docTag; $("#log").lastElementChild.prepend(s); }
+    const docTag = freshDocs.map(d => d.title).join("», «");
+    if (docTag) { freshDocs.forEach(d => { d.fresh = false; }); showDoc(""); const s = document.createElement("div"); s.className = "small"; s.textContent = "📄 " + docTag.replace(/», «/g, " · "); $("#log").lastElementChild.prepend(s); }
     D.msgs.push({ role: "user", text, ts: Date.now(), photo: !!img, temp, ...(docTag ? { doc: docTag } : {}) }); persist();
   }
   if (!anyBrain()) {
@@ -287,16 +296,18 @@ async function send(text, opts = {}) {
   try {
     const [facts, knowledge] = await Promise.all([relevantFacts(text).catch(() => activeFacts().slice(-40)), search(text).catch(() => [])]);
     const docs = docsForPrompt();
-    // Документ в фокусе (прикреплён в последние 30 минут): небольшой — целиком, большой — выжимка по всему документу
-    let doc = null;
-    if (focusDoc && Date.now() - focusDoc.ts < 30 * 6e4) {
-      focusDoc.ts = Date.now();
-      const full = await docFull(focusDoc.id).catch(() => "");
-      if (full && full.length <= 60000) doc = { title: focusDoc.title, text: full, full: true };
+    // Документы в фокусе (прикреплены в последние 30 минут, до трёх — чтобы сравнивать): небольшие — целиком,
+    // большой — выжимка по всему документу. Общий объём полного текста — до 60 тыс. знаков.
+    const doc = [];
+    const live = focusDocs.filter(d => Date.now() - d.ts < 30 * 6e4);
+    for (const fd of live) {
+      fd.ts = Date.now();
+      const full = await docFull(fd.id).catch(() => "");
+      if (full && full.length <= 60000 / live.length) doc.push({ title: fd.title, text: full, full: true });
       else if (full && WHOLE_RE.test(text)) {
-        const r = await deepPass(focusDoc.title, full, text, async p => (await chat({ system: "Ты внимательно читаешь часть документа и выписываешь нужное для задачи. По-русски, точно, без выдумок.", hist: [{ role: "user", text: p }], onText: () => {}, signal: ctl.signal, noSearch: true })).text,
-          { signal: ctl.signal, onProgress: (k, n) => { body.innerHTML = `<span class="thinking">Читаю весь документ: часть ${k} из ${n}…</span>`; } });
-        doc = { title: focusDoc.title, text: r.notes || "(в документе не нашлось ничего, что относится к задаче)", full: false };
+        const r = await deepPass(fd.title, full, text, async p => (await chat({ system: "Ты внимательно читаешь часть документа и выписываешь нужное для задачи. По-русски, точно, без выдумок.", hist: [{ role: "user", text: p }], onText: () => {}, signal: ctl.signal, noSearch: true })).text,
+          { signal: ctl.signal, onProgress: (k, n) => { body.innerHTML = `<span class="thinking">Читаю «${esc(fd.title)}»: часть ${k} из ${n}…</span>`; } });
+        doc.push({ title: fd.title, text: r.notes || "(в документе не нашлось ничего, что относится к задаче)", full: false });
         body.innerHTML = `<span class="thinking">Собираю ответ…</span>`;
       }
     }
@@ -337,7 +348,9 @@ async function send(text, opts = {}) {
     if (out.remembered.length) notes.push("🧠 Запомнил: " + out.remembered.join("; "));
     if (out.learned.length) notes.push("📘 Выучил: " + out.learned.join(", "));
     if (out.cards) notes.push("🃏 " + plural(out.cards, "новая карточка", "новые карточки", "новых карточек"));
+    if (out.done.length) notes.push("✓ Отметил сделанным: " + out.done.join("; "));
     if (notes.length) { const n = document.createElement("div"); n.className = "memnote"; n.textContent = notes.join(" · "); el.append(n); }
+    if (out.removed.length) addUndoNote(el, out);
     renderLists();
     showReply(el);
     busy = null; lastFail = ""; idleStatus();
@@ -432,7 +445,7 @@ $("#projAdd").addEventListener("submit", e => {
   $("#projNew").value = ""; setProject(p.id); closeSheets(); toast("Проект: " + p.name, 1800);
 });
 
-/* =================== Файлы от Сумрака =================== */
+/* =================== Файлы от Дмитрия Павлова =================== */
 /* Карточка файла: собирается на телефоне; новый — сразу (чтобы «Отправить» сработало по первому касанию), из истории — по касанию. */
 function renderFileCards(el, files, eager) {
   files.forEach(f => {
@@ -459,13 +472,14 @@ function renderFileCards(el, files, eager) {
 /* =================== Фото =================== */
 $("#photoBtn").onclick = () => $("#photo").click();
 $("#photo").onchange = async e => {
-  const f = e.target.files && e.target.files[0]; e.target.value = ""; if (!f) return;
-  if (/^image\//.test(f.type)) { try { photo = await shrinkImage(f); showPhoto(); } catch { toast("Не получилось открыть фото."); } return; }
-  attachDoc(f);
+  const files = [...(e.target.files || [])]; e.target.value = "";
+  const img = files.find(f => /^image\//.test(f.type));
+  if (img) { try { photo = await shrinkImage(img); showPhoto(); } catch { toast("Не получилось открыть фото."); } }
+  for (const f of files.filter(f => !/^image\//.test(f.type)).slice(0, 3)) await attachDoc(f);   // по очереди: читаются на телефоне
 };
 /* Документ, прикреплённый в чате: читаю на телефоне, кладу в «Знания» и держу «в фокусе» разговора —
    следующие вопросы и просьбы («исправь», «выпиши все суммы», «сделай PDF») — про него. */
-let focusDoc = null;   // { id, title, kind, chars, ts }
+let focusDocs = [];   // [{ id, title, kind, chars, ts, fresh }] — до трёх
 const showDoc = t => { $("#docPrev").hidden = !t; if (t) $("#docPrevText").textContent = t; };
 async function attachDoc(file) {
   showDoc("Читаю «" + file.name + "»…");
@@ -473,12 +487,15 @@ async function attachDoc(file) {
     const r = await fromFile(file, t => showDoc(t));
     const d = await addDoc(r.title || file.name, r.text, r.kind, { pages: r.pages || 0, background: true, onProgress: t => showDoc(t) });
     if (D.meta.currentProject) { d.project = D.meta.currentProject; persist(); }
-    focusDoc = { id: d.id, title: d.title, kind: r.kind, chars: r.text.length, ts: Date.now(), fresh: true };
-    showDoc(`«${d.title}» — ${r.pages ? plural(r.pages, "страница", "страницы", "страниц") : plural(Math.max(1, Math.round(r.text.length / 1800)), "страница", "страницы", "страниц")}. Напиши, что сделать: найти, выписать, исправить, сделать PDF…`);
+    // Недавние документы (30 минут) остаются рядом с новым — их можно сравнить; не больше трёх
+    focusDocs = focusDocs.filter(x => x.id !== d.id && Date.now() - x.ts < 30 * 6e4).slice(-2);
+    focusDocs.push({ id: d.id, title: d.title, kind: r.kind, chars: r.text.length, ts: Date.now(), fresh: true });
+    const pages = r.pages ? plural(r.pages, "страница", "страницы", "страниц") : plural(Math.max(1, Math.round(r.text.length / 1800)), "страница", "страницы", "страниц");
+    showDoc(focusDocs.length > 1 ? `${focusDocs.map(x => "«" + x.title + "»").join(", ")}. Напиши, что сделать: сравнить, найти, выписать…` : `«${d.title}» — ${pages}. Напиши, что сделать: найти, выписать, исправить, сделать PDF…`);
     renderKnow(); $("#input").focus();
   } catch (e) { showDoc(""); toast("Не получилось прочитать: " + (e.message || e), 4000); }
 }
-$("#docDel").onclick = () => { focusDoc = null; showDoc(""); };
+$("#docDel").onclick = () => { focusDocs = []; showDoc(""); };
 const WHOLE_RE = /(^|[^\p{L}])(все|всё|всех|весь|целиком|полност|список|выпиши|перечисли|найди|сводк|перескаж|кратко|итог|проанализ|сравни|исправ|перепиш|переведи|оформи|сократи|проверь)/iu;
 function shrinkImage(file) {
   return new Promise((resolve, reject) => {
@@ -508,7 +525,7 @@ function voiceErr(e) {
   return explain(e);
 }
 function showHint(t) { $("#hint").textContent = t || ""; $("#hint").hidden = !t; }
-/* Панель записи: видно, слушает ли Сумрак, слышит ли голос, когда распознаёт. */
+/* Панель записи: видно, слушает ли Дмитрий Павлов, слышит ли голос, когда распознаёт. */
 let micSt = "idle", micT0 = 0, micTimer = 0, micGen = 0;
 function vbSet(st, title, sub) {
   micSt = st; const bar = $("#voiceBar");
@@ -594,7 +611,7 @@ $("#orb").onclick = () => {
   if (talkPhase === "thinking" && busy) { busy.abort(); return; }
   if (talkPhase === "idle" && talkOn) talkLoop();
 };
-/* Приветствие голосом — Сумрак начинает разговор первым, как живой собеседник. */
+/* Приветствие голосом — Дмитрий Павлов начинает разговор первым, как живой собеседник. */
 function spokenGreeting() {
   const h = new Date().getHours();
   const g = h < 5 ? "Доброй ночи" : h < 12 ? "Доброе утро" : h < 18 ? "Добрый день" : "Добрый вечер";
@@ -603,7 +620,7 @@ function spokenGreeting() {
   const tail = today.length ? ` Сегодня у тебя: ${today.slice(0, 2).map(t => t.text + " в " + hm(new Date(t.due))).join(", ")}.` : "";
   const over = D.tasks.filter(t => !t.done && (t.notified || now - t.due >= 864e5) && t.due && t.due < now && now - t.due < 7 * 864e5 && !t.repeat);
   const late = over.length ? ` Не закрыто с прошлого: ${over.slice(0, 2).map(t => t.text).join(", ")}${over.length > 2 ? " и ещё " + (over.length - 2) : ""} — сделано или перенести?` : "";
-  return `${g}, Дмитрий Павлович.${tail}${late} Слушаю тебя.`;
+  return `${g}, Сумрак.${tail}${late} Слушаю тебя.`;
 }
 async function talkLoop() {
   const gen = ++talkGen;                      // только один цикл разговора одновременно
@@ -618,7 +635,7 @@ async function talkLoop() {
   while (alive()) {
     talkSet("listening"); orbLevel(0);
     let text = "";
-    // Ждём паузу из настроек (по умолчанию 2,5 с) и до 15 с, пока Дмитрий Павлович собирается с мыслями перед первой фразой
+    // Ждём паузу из настроек (по умолчанию 2,5 с) и до 15 с, пока Сумрак собирается с мыслями перед первой фразой
     try { text = await V.listen({ silenceMs: pauseMs(), noSpeechMs: 15000, onLevel: orbLevel, onTranscribing: () => talkSet("transcribing"), onInterim: t => { $("#talkText").textContent = t; } }); }
     catch (e) { if (alive()) talkSet("idle", voiceErr(e)); return; }
     orbLevel(0);
@@ -630,7 +647,7 @@ async function talkLoop() {
     empties = 0;
     $("#talkText").textContent = "«" + text + "»";
     if (/^(стоп|хватит|пока|выход|заверши|всё,? спасибо|отбой)[.!]?$/i.test(text.trim())) {
-      talkSet("speaking"); await V.speak("До связи, Дмитрий Павлович.", { force: true }); closeTalk(); return;
+      talkSet("speaking"); await V.speak("До связи, Сумрак.", { force: true }); closeTalk(); return;
     }
     talkSet("thinking");
     let reply = "";
@@ -652,7 +669,7 @@ function startReview() {
   review = { q, i: 0 }; setTab("chat"); nextCard();
 }
 function nextCard() {
-  if (!review || review.i >= review.q.length) { addMsg("ai", "Повторение закончено. Молодец, Дмитрий Павлович."); review = null; renderKnow(); return; }
+  if (!review || review.i >= review.q.length) { addMsg("ai", "Повторение закончено. Молодец, Сумрак."); review = null; renderKnow(); return; }
   const c = review.q[review.i];
   const el = addMsg("ai", `**Карточка ${review.i + 1} из ${review.q.length}**${c.topic ? " · " + c.topic : ""}\n${c.q}`);
   const box = document.createElement("div"); box.className = "acts";
@@ -675,8 +692,8 @@ $("#selfReviewBtn").onclick = async e => {
 
 /* =================== Действия на iPhone через «Команды» =================== */
 /* Веб-приложению iPhone не даёт трогать будильник и файлы. Это умеет приложение «Команды»:
-   Сумрак передаёт задачу команде «Сумрак Действие» (её один раз создают по инструкции), она и выполняет. */
-const DEVICE_SHORTCUT = "Сумрак Действие";
+   Дмитрий Павлов передаёт задачу команде «ДП Действие» (её один раз создают по инструкции), она и выполняет. */
+const DEVICE_SHORTCUT = "ДП Действие";
 // Переход в «Команды» (в тестах перехватывается через window.__dpOpen)
 const openURL = url => { if (window.__dpOpen) window.__dpOpen(url); else location.href = url; };
 function runDevice(d) {
@@ -695,7 +712,7 @@ function addDeviceButtons(el, list) {
 $("#testAlarm").onclick = () => runDevice({ do: "timer", minutes: 1 });
 
 /* =================== Напоминания =================== */
-const SHORTCUT = "Сумрак Напоминание";
+const SHORTCUT = "ДП Напоминание";
 function sendToIOS(t) {
   openURL("shortcuts://run-shortcut?name=" + encodeURIComponent(SHORTCUT) + "&input=text&text=" + encodeURIComponent(JSON.stringify({ title: t.text, due: isoLocal(t.due) })));
 }
@@ -723,10 +740,10 @@ function checkReminders() {
   });
   if (fired.length) {
     // Несколько сразу (например, пока приложение было закрыто) — одним сообщением, одним сигналом
-    const msg = "Дмитрий Павлович, напоминаю: " + (fired.length === 1 ? fired[0] : fired.map(t => "«" + t + "»").join(", "));
+    const msg = "Сумрак, напоминаю: " + (fired.length === 1 ? fired[0] : fired.map(t => "«" + t + "»").join(", "));
     toast("⏰ " + (fired.length === 1 ? fired[0] : plural(fired.length, "напоминание", "напоминания", "напоминаний")), 8000);
     V.beep(); addMsg("ai", msg);
-    // Не говорим поверх записи (иначе напоминание попадёт в микрофон как фраза Дмитрия Павловича)
+    // Не говорим поверх записи (иначе напоминание попадёт в микрофон как фраза Сумрака)
     // и не обрываем ответ, который сейчас звучит, — тогда хватит сигнала и сообщения
     if (!talkOn && !V.isRecording() && !V.speaking() && !busy) V.speak(msg, { force: true });
   }
@@ -795,10 +812,21 @@ function renderMem() {
   $("#mstat").textContent = facts.length || "";
   // Неизвестная тема (например, из старой копии) — в «другое», иначе факт посчитан, но не виден
   $("#facts").innerHTML = CATS.map(c => [c, facts.filter(f => (CATS.includes(f.cat) ? f.cat : "другое") === c).sort((a, b) => (b.imp || 5) - (a.imp || 5))]).filter(g => g[1].length)
-    .map(([c, list]) => `<li class="grp">${esc(c)}</li>` + list.map(f => `<li class="row nocheck"><div class="tx">${esc(f.text)}<span class="due">${dots(f.imp)} · ${fmtAgo(f.ts)}</span></div><button class="x" data-forget="${esc(f.id)}" aria-label="Забыть">×</button></li>`).join("")).join("");
+    .map(([c, list]) => `<li class="grp">${esc(c)}</li>` + list.map(f => `<li class="row nocheck"><div class="tx" data-fedit="${esc(f.id)}" role="button" tabindex="0" title="Исправить">${esc(f.text)}<span class="due">${dots(f.imp)} · ${fmtAgo(f.ts)}</span></div><button class="x" data-forget="${esc(f.id)}" aria-label="Забыть">×</button></li>`).join("")).join("");
   emptyAfter("#facts", facts.length, "Пока ничего. Просто разговаривай со мной — я буду запоминать важное.");
   $("#diary").textContent = D.diary.text || "Пока пусто. Когда разговоров станет больше, здесь появится краткая история: о чём мы говорили и что решили.";
 }
+// Факт можно исправить: нажать на текст → поле → «Сохранить»
+$("#facts").addEventListener("click", e => {
+  const t = e.target.closest("[data-fedit]"); if (!t) return;
+  const f = D.facts.find(x => x.id === t.dataset.fedit); if (!f) return;
+  const form = document.createElement("form"); form.className = "add fedit";
+  form.innerHTML = `<input aria-label="Исправить факт"><button type="submit">Сохранить</button>`;
+  form.querySelector("input").value = f.text;
+  form.onsubmit = ev => { ev.preventDefault(); if (editFact(f.id, form.querySelector("input").value)) toast("Исправил.", 1500); renderMem(); };
+  t.replaceWith(form); form.querySelector("input").focus();
+});
+$("#facts").addEventListener("keydown", e => { if (e.key === "Enter" && e.target.dataset.fedit) e.target.click(); });
 function renderLists() { renderTasks(); renderKnow(); renderMem(); renderBrief(); renderProject(); }
 
 document.addEventListener("click", async e => {
@@ -957,7 +985,7 @@ async function getLocalVoice(btn, out) {
     show("Готовлю голос…");
     V.warmLocal();
     localBusy = false; await updateLocal(); idleStatus();
-    V.unlock(); V.speak("Дмитрий Павлович, теперь я говорю вот так. Спокойно и по-человечески.", { force: true }).finally(syncSendBtn);
+    V.unlock(); V.speak("Сумрак, теперь я говорю вот так. Спокойно и по-человечески.", { force: true }).finally(syncSendBtn);
     return true;
   } catch (e) {
     show("Не получилось скачать голос: " + (e.message || e) + ". Проверь интернет и попробуй ещё раз (VPN не нужен — голос лежит на нашем сайте).");
@@ -968,8 +996,8 @@ $("#localGet").onclick = e => { V.unlock(); getLocalVoice(e.target); };
 $("#localDel").onclick = async () => { await V.removeLocal(); updateLocal(); toast("Голос удалён с телефона.", 2000); };
 $("#pace").oninput = e => { S.pace = +e.target.value; saveSettings(); updateLocal(); };
 $("#rate").oninput = e => { S.rate = +e.target.value; $("#rateVal").textContent = "×" + S.rate.toFixed(2); saveSettings(); };
-$("#testVoice").onclick = () => { V.unlock(); V.speak("Дмитрий Павлович, я на связи. Так звучит мой голос.", { force: true }).finally(syncSendBtn); syncSendBtn(); };
-$("#testReminder").onclick = () => sendToIOS({ text: "Проверка: Сумрак", due: Date.now() + 2 * 6e4 });
+$("#testVoice").onclick = () => { V.unlock(); V.speak("Сумрак, я на связи. Так звучит мой голос.", { force: true }).finally(syncSendBtn); syncSendBtn(); };
+$("#testReminder").onclick = () => sendToIOS({ text: "Проверка: Дмитрий Павлов", due: Date.now() + 2 * 6e4 });
 
 /* =================== Проверка системы =================== */
 let diagReport = "";
@@ -1002,7 +1030,7 @@ $("#diagBtn").onclick = async e => {
   } else add(null, "Живой голос", "нужен Gemini (с VPN); сейчас — голос iPhone");
   add(S.voiceMode !== "local" ? null : V.localAvailable() ? true : false, "Голос на телефоне", S.voiceMode !== "local" ? "выключен (выбран другой голос)" : V.localAvailable() ? "скачан, работает без лимитов" : "не скачан — «Настройки» → «Голос» → «Скачать голос»");
   const vs = V.loadIOSVoices(); add(vs.length ? true : null, "Голос iPhone", vs.length ? vs.map(v => v.name).join(", ") : "русских голосов не найдено — скачай «Юрий» в настройках iPhone");
-  diagReport = "Сумрак — проверка " + new Date().toLocaleString("ru-RU") + "\n" + rows.map(r => `${r.ok === true ? "OK" : r.ok === false ? "ОШИБКА" : "внимание"} | ${r.name}: ${r.info}`).join("\n");
+  diagReport = "Дмитрий Павлов — проверка " + new Date().toLocaleString("ru-RU") + "\n" + rows.map(r => `${r.ok === true ? "OK" : r.ok === false ? "ОШИБКА" : "внимание"} | ${r.name}: ${r.info}`).join("\n");
   $("#diagCopy").hidden = false; btn.disabled = false; btn.textContent = "Проверить ещё раз";
 };
 $("#diagCopy").onclick = async () => { try { await navigator.clipboard.writeText(diagReport); toast("Отчёт скопирован — пришли его Claude, если нужна помощь.", 3000); } catch { toast(diagReport); } };
@@ -1026,7 +1054,7 @@ async function doBackup() {
   const name = "dmitriy-backup-" + todayKey() + ".json";
   try {
     const file = new File([json], name, { type: "application/json" });
-    if (navigator.canShare && navigator.canShare({ files: [file] })) { await navigator.share({ files: [file], title: "Копия Сумрака" }); backedUp(); return true; }
+    if (navigator.canShare && navigator.canShare({ files: [file] })) { await navigator.share({ files: [file], title: "Копия Дмитрия Павлова" }); backedUp(); return true; }
   } catch (e) { if (e && e.name === "AbortError") return false; }
   try { await navigator.clipboard.writeText(json); backedUp(); toast("Копия скопирована. Сохрани её в Заметки iPhone.", 3500); return true; }
   catch { setTab("set"); $("#restoreBox").hidden = false; $("#restoreText").value = json; $("#restoreText").select(); toast("Выдели и скопируй текст вручную."); return false; }
@@ -1037,7 +1065,7 @@ function backupWorth() { return activeFacts().length >= 5 || D.docs.length > 0 |
 function offerBackup() {
   if (!backupWorth() || Date.now() - (D.meta.lastBackup || Math.min(D.meta.firstSeen || Date.now(), (D.msgs[0] && D.msgs[0].ts) || Date.now())) < 7 * 864e5 || Date.now() - (D.meta.backupOffer || 0) < 3 * 864e5) return false;
   D.meta.backupOffer = Date.now(); persist(); prepBackup();
-  const el = addMsg("ai", `Дмитрий Павлович, всё, что я о тебе знаю (${plural(activeFacts().length, "факт", "факта", "фактов")}, ${plural(D.docs.length, "материал", "материала", "материалов")}, навыки), хранится только на этом телефоне. ${D.meta.lastBackup ? "Последней копии больше недели." : "Копии ещё не было."} Сохрани её в «Файлы» — займёт секунду.`);
+  const el = addMsg("ai", `Сумрак, всё, что я о тебе знаю (${plural(activeFacts().length, "факт", "факта", "фактов")}, ${plural(D.docs.length, "материал", "материала", "материалов")}, навыки), хранится только на этом телефоне. ${D.meta.lastBackup ? "Последней копии больше недели." : "Копии ещё не было."} Сохрани её в «Файлы» — займёт секунду.`);
   const box = document.createElement("div"); box.className = "acts";
   box.append(pill("💾 Сохранить копию", async e => { if (await doBackup()) { e.target.textContent = "✓ Сохранено"; e.target.disabled = true; } }));
   el.append(box);
@@ -1066,7 +1094,7 @@ $("#input").addEventListener("keydown", e => { if (e.key === "Enter" && !e.shift
 $("#form").addEventListener("submit", e => {
   e.preventDefault(); V.unlock();
   const v = $("#input").value.trim();
-  if (!v && !photo && !(focusDoc && focusDoc.fresh)) { if (busy) busy.abort(); else if (V.speaking()) { V.stopSpeaking(); syncSendBtn(); } return; }
+  if (!v && !photo && !focusDocs.some(d => d.fresh)) { if (busy) busy.abort(); else if (V.speaking()) { V.stopSpeaking(); syncSendBtn(); } return; }
   send(v);
 });
 function setTab(t) { if (t === "set") { if (backupVer !== dataVersion()) setTimeout(prepBackup, 400); fillSettings(); } document.body.dataset.tab = t; $$(".tabbar button").forEach(b => b.setAttribute("aria-selected", String(b.dataset.tab === t))); if (t === "chat") { const c = $("#log .setup"); c ? c.scrollIntoView({ block: "start" }) : scrollDown(); } }
@@ -1092,8 +1120,8 @@ function offerVoice() {
   if (S.voiceMode !== "local" || V.localAvailable() || !anyBrain() || (!switched && Date.now() - (D.meta.voiceOffer || 0) < 3 * 864e5)) return false;
   D.meta.voiceOffer = Date.now(); persist();
   const el = addMsg("ai", switched
-    ? "Дмитрий Павлович, я сменил себе голос на более низкий и спокойный — «Руслан». Скачай его один раз (около 60 МБ, лучше по Wi-Fi, VPN не нужен). Прежний голос можно вернуть в настройках."
-    : "Дмитрий Павлович, хочешь, чтобы я говорил нормальным мужским голосом, а не роботом? Скачай голос один раз (около 90 МБ, лучше по Wi-Fi, VPN не нужен) — дальше он работает прямо на телефоне, бесплатно и без лимитов.");
+    ? "Сумрак, я сменил себе голос на более низкий и спокойный — «Руслан». Скачай его один раз (около 60 МБ, лучше по Wi-Fi, VPN не нужен). Прежний голос можно вернуть в настройках."
+    : "Сумрак, хочешь, чтобы я говорил нормальным мужским голосом, а не роботом? Скачай голос один раз (около 90 МБ, лучше по Wi-Fi, VPN не нужен) — дальше он работает прямо на телефоне, бесплатно и без лимитов.");
   const box = document.createElement("div"); box.className = "acts";
   const out = document.createElement("div"); out.className = "small";
   box.append(pill("⬇️ Скачать голос", e => { V.unlock(); getLocalVoice(e.target, out); }));

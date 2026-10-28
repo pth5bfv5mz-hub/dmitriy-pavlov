@@ -36,7 +36,7 @@ function migrate(s) {
   if (!s.voiceMig35) { if (s.voiceMode === "live") s.voiceMode = "local"; s.voiceMig35 = true; }
   // 3.6: «Дмитрий» из Piper оказался высоковат — по умолчанию низкий спокойный «Руслан»
   if (!s.voiceMig36) { if (s.piperVoice === "ru_RU-dmitri-medium") { s.piperVoice = "ru_RU-ruslan-medium"; s.voiceSwitched = true; } s.voiceMig36 = true; }
-  // 4.0 «Сумрак»: проще — без голосового экрана при запуске и без утренней сводки (включаются в настройках)
+  // 4.0: проще — без голосового экрана при запуске и без утренней сводки (включаются в настройках)
   if (!s.mig40) { s.talkOnOpen = false; s.briefing = false; s.mig40 = true; }
   return s;
 }
@@ -59,25 +59,27 @@ export const D = {
   projects: load("projects", []), // {id, name, ts} — рабочий контекст: дела, заметки, материалы, решения
   meta: load("meta", { lastTidy: 0, lastReflect: 0, lastBrief: "", impSinceReflect: 0, tempChat: false, models: null }),
 };
-/* 4.0: ассистента зовут «Сумрак», пользователя — «Дмитрий Павлович» (раньше было наоборот).
-   Накопленные память и переписка написаны в старых именах — переписываем их один раз,
-   иначе модель путала бы, кто есть кто. Сначала имя ассистента — во временную метку, потом имя пользователя, потом метку. */
-const FORMS = [["Дмитрий Павлов", "Сумрак"], ["Дмитрия Павлова", "Сумрака"], ["Дмитрию Павлову", "Сумраку"], ["Дмитрием Павловым", "Сумраком"], ["Дмитрии Павлове", "Сумраке"]];
-const USER = [["Сумрак", "Дмитрий Павлович"], ["Сумрака", "Дмитрия Павловича"], ["Сумраку", "Дмитрию Павловичу"], ["Сумраком", "Дмитрием Павловичем"], ["Сумраке", "Дмитрии Павловиче"]];
+/* Имена: ассистент — «Дмитрий Павлов», пользователь — «Сумрак».
+   Версия 4.0.0 по ошибке переписала историю и память с именами наоборот (ассистент «Сумрак»,
+   пользователь «Дмитрий Павлович»). Если это успело случиться — возвращаем один раз.
+   Сначала «Сумрак» — во временную метку, потом «Дмитрий Павлович» → «Сумрак», потом метку → «Дмитрий Павлов». */
+const ASSIST = ["Дмитрий Павлов", "Дмитрия Павлова", "Дмитрию Павлову", "Дмитрием Павловым", "Дмитрии Павлове"];
+const USER = ["Сумрак", "Сумрака", "Сумраку", "Сумраком", "Сумраке"];
+const WRONG = ["Дмитрий Павлович", "Дмитрия Павловича", "Дмитрию Павловичу", "Дмитрием Павловичем", "Дмитрии Павловиче"];
 const word = w => new RegExp("(^|[^\\p{L}])" + w + "(?![\\p{L}])", "gu");
-export function renameText(t) {
+export function unswapNames(t) {
   if (typeof t !== "string" || !t) return t;
-  FORMS.forEach(([a], i) => { t = t.replace(word(a), (m, p) => p + "\u0001" + i + "\u0002"); });
-  USER.forEach(([a, b]) => { t = t.replace(word(a), (m, p) => p + b); });
-  return t.replace(/\u0001(\d)\u0002/g, (m, i) => FORMS[+i][1]);
+  USER.forEach((a, i) => { t = t.replace(word(a), (m, p) => p + "\u0001" + i + "\u0002"); });
+  WRONG.forEach((a, i) => { t = t.replace(word(a), (m, p) => p + USER[i]); });
+  return t.replace(/\u0001(\d)\u0002/g, (m, i) => ASSIST[+i]);
 }
-if (!D.meta.renamed40) {
-  const fix = (arr, keys) => arr.forEach(x => keys.forEach(k => { if (x && typeof x[k] === "string") x[k] = renameText(x[k]); }));
+if (D.meta.renamed40 && !D.meta.renamed41) {
+  const fix = (arr, keys) => arr.forEach(x => keys.forEach(k => { if (x && typeof x[k] === "string") x[k] = unswapNames(x[k]); }));
   fix(D.msgs, ["text"]); fix(D.facts, ["text"]); fix(D.notes, ["text"]); fix(D.lessons, ["text"]); fix(D.insights, ["text"]);
   fix(D.mistakes, ["what", "why", "fix", "q"]); fix(D.skills, ["name", "desc", "trigger", "steps"]); fix(D.cards, ["q", "a"]);
-  Object.keys(D.core).forEach(k => { D.core[k] = renameText(D.core[k]); });
-  D.diary.text = renameText(D.diary.text);
-  D.meta.renamed40 = true;
+  Object.keys(D.core).forEach(k => { D.core[k] = unswapNames(D.core[k]); });
+  D.diary.text = unswapNames(D.diary.text);
+  D.meta.renamed41 = true;
   queueMicrotask(() => persist());
 }
 // Инкогнито живёт только до закрытия приложения: на диске его разговоров нет, флаг сбрасываем
