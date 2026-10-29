@@ -30,7 +30,7 @@ async function getIndex() {
   if (index && index.sig === signature()) return index;
   // Только фрагменты документов, которые есть в списке (остатки удалённых или прерванных — не в счёт)
   const ids = new Set(D.docs.map(d => d.id));
-  const chunks = (await idbAll("chunks")).filter(c => ids.has(c.docId) && !c.full);   // полный текст — не фрагмент поиска
+  const chunks = (await idbAll("chunks")).filter(c => ids.has(c.docId) && !c.full && !c.orig);   // полный текст — не фрагмент поиска
   const tokens = chunks.map(c => terms(c.title + " " + c.text));
   const df = new Map(); tokens.forEach(t => new Set(t).forEach(w => df.set(w, (df.get(w) || 0) + 1)));
   const tf = tokens.map(t => { const m = new Map(); t.forEach(w => m.set(w, (m.get(w) || 0) + 1)); return m; });
@@ -43,7 +43,7 @@ async function getIndex() {
 export const invalidate = () => { index = null; };
 
 /* ---------- Добавление ---------- */
-export async function addDoc(title, text, kind = "текст", { pages = 0, onProgress, background = false } = {}) {
+export async function addDoc(title, text, kind = "текст", { pages = 0, onProgress, background = false, orig = null } = {}) {
   text = String(text || "").trim();
   if (text.length < 20) throw new Error("Слишком мало текста.");
   const docId = uid();
@@ -54,9 +54,11 @@ export async function addDoc(title, text, kind = "текст", { pages = 0, onPr
     for (let i = 0; i < chunks.length; i += 200) await idbPut("chunks", chunks.slice(i, i + 200));
     // Полный текст целиком — чтобы исправлять документ и проходить его от начала до конца, а не только искать отрывки
     if (text.length <= 3e6) await idbPut("chunks", { id: docId + ":full", docId, n: -1, full: true, title, text });
+    // Исходный Word — чтобы вносить правки прямо в него, сохраняя оформление и сноски
+    if (orig && orig.byteLength <= 30e6) await idbPut("chunks", { id: docId + ":orig", docId, n: -2, orig: true, title, text: "", bytes: orig });
   }
   catch (e) { await idbDelDoc(docId).catch(() => {}); throw new Error("Не хватило места в памяти телефона для этого материала."); }
-  const doc = { id: docId, title: String(title).slice(0, 120), kind, ts: Date.now(), chunks: chunks.length, chars: text.length, pages, vec: false, preview: text.slice(0, 200), summary: "" };
+  const doc = { id: docId, title: String(title).slice(0, 120), kind, ts: Date.now(), chunks: chunks.length, chars: text.length, pages, vec: false, preview: text.slice(0, 200), summary: "", ...(orig && orig.byteLength <= 30e6 ? { orig: true } : {}) };
   D.docs.push(doc); persist(); invalidate();
   if (canEmbed()) {
     embedding.add(docId);
@@ -91,7 +93,7 @@ export async function ensureDocVecs() {
   for (const d of D.docs.filter(d => !d.vec && !embedding.has(d.id))) {
     embedding.add(d.id);
     try {
-      const chunks = (await idbDocChunks(d.id)).filter(c => !c.full).sort((a, b) => a.n - b.n);
+      const chunks = (await idbDocChunks(d.id)).filter(c => !c.full && !c.orig).sort((a, b) => a.n - b.n);
       if (!chunks.length) continue;   // текст материала утерян — нечего считать
       await embedChunks(d, chunks);
       invalidate();
@@ -139,7 +141,12 @@ export async function search(query, k) {
 export async function docFull(docId) {
   const all = await idbDocChunks(docId);
   const f = all.find(c => c.full); if (f) return f.text;
-  return all.filter(c => !c.full).sort((a, b) => a.n - b.n).map(c => c.text).join("\n\n");
+  return all.filter(c => !c.full && !c.orig).sort((a, b) => a.n - b.n).map(c => c.text).join("\n\n");
+}
+/* Исходный файл Word (если сохранён при прикреплении). */
+export async function docOrig(docId) {
+  const o = (await idbDocChunks(docId)).find(c => c.orig);
+  return o && o.bytes ? o.bytes : null;
 }
 /* Пройти весь большой документ частями: из каждой части нейросеть выписывает то, что нужно для задачи,
    потом ответ строится по этой выжимке. 200 страниц ≈ 6–8 запросов (поэтому — только для задач «по всему документу»). */
@@ -192,8 +199,9 @@ export async function fromFile(file, onProgress = () => {}) {
   if (/\.docx$|wordprocessingml/i.test(type)) {
     onProgress("Открываю документ Word…");
     await loadScript("lib/mammoth.browser.min.js");
-    const r = await window.mammoth.extractRawText({ arrayBuffer: await file.arrayBuffer() });
-    return { title: name.replace(/\.docx$/i, ""), text: r.value, kind: "Word" };
+    const buf = await file.arrayBuffer();
+    const r = await window.mammoth.extractRawText({ arrayBuffer: buf });
+    return { title: name.replace(/\.docx$/i, ""), text: r.value, kind: "Word", orig: buf };
   }
   if (/^text\/|\.(txt|md|csv|json|html?|xml|rtf|log)$/i.test(type)) return { title: name, text: await file.text(), kind: "файл" };
   if (/image\//i.test(type)) {

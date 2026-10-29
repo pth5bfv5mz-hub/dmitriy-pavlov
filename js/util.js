@@ -102,3 +102,37 @@ export function cosine(a, b) {
   for (let i = 0; i < a.length && i < b.length; i++) { s += a[i] * b[i]; na += a[i] * a[i]; nb += b[i] * b[i]; }
   return na && nb ? s / Math.sqrt(na * nb) : 0;
 }
+
+/* Время напоминания из его фразы — страховка, если модель пообещала напомнить, но дело не создала.
+   Понимает частое: «через 15 минут / полчаса / час / 2 дня», «в 18:30», «завтра в 10», «в 7 вечера».
+   Сложное («в пятницу», «15 мая») остаётся модели. Возвращает { due, text } или null. */
+const NUM_W = { одну: 1, одна: 1, один: 1, две: 2, два: 2, три: 3, четыре: 4, пять: 5, шесть: 6, семь: 7, восемь: 8, девять: 9, десять: 10, пятнадцать: 15, двадцать: 20, тридцать: 30, сорок: 40, пятьдесят: 50 };
+const AFTER_RE = new RegExp(`через\\s+(?:(\\d+(?:[.,]\\d+)?|${Object.keys(NUM_W).join("|")})\\s+)?(полчаса|полтора\\s+часа|сек[а-я]*|мин[а-я]*|час[а-я]*|д[не][а-я]*|сут[а-я]*|недел[а-я]*)(?![а-я])`, "i");
+const AT_RE = /(?:(сегодня|завтра|послезавтра)\s+)?(?:в|к|на)\s+(\d{1,2})(?:[:.](\d{2})|\s*час[а-я]*)?(?:\s+(утра|дня|вечера|ночи))?(?![\d:.])/i;
+export function parseWhen(text, now = Date.now()) {
+  const s = String(text || "").replace(/ё/gi, "е");
+  let due = null, m = s.match(AFTER_RE);
+  if (m) {
+    const unit = m[2].toLowerCase();
+    const n = m[1] ? (NUM_W[m[1].toLowerCase()] || parseFloat(m[1].replace(",", "."))) : 1;
+    const ms = /^полчаса/.test(unit) ? 18e5 : /^полтора/.test(unit) ? 54e5 : /^сек/.test(unit) ? 1e3 : /^мин/.test(unit) ? 6e4 : /^час/.test(unit) ? 36e5 : /^недел/.test(unit) ? 7 * 864e5 : 864e5;
+    due = now + Math.round((/^пол/.test(unit) ? 1 : n) * ms);
+  } else if ((m = s.match(AT_RE)) && (m[1] || m[3] !== undefined || m[4] || /час/i.test(m[0]))) {
+    let h = +m[2]; const min = m[3] !== undefined ? +m[3] : 0, part = (m[4] || "").toLowerCase();
+    if ((part === "вечера" || part === "дня") && h < 12) h += 12;
+    if ((part === "ночи" || part === "утра") && h === 12) h = 0;
+    if (h > 23 || min > 59) return null;
+    const d = new Date(now); d.setSeconds(0, 0); d.setHours(h, min);
+    const day = (m[1] || "").toLowerCase();
+    if (day === "завтра") d.setDate(d.getDate() + 1);
+    else if (day === "послезавтра") d.setDate(d.getDate() + 2);
+    else if (d.getTime() <= now) { if (day === "сегодня") return null; d.setDate(d.getDate() + 1); }
+    due = d.getTime();
+  }
+  if (!due || due <= now) return null;
+  const rest = s.replace(m[0], " ")
+    .replace(/(пожалуйста|поставь(те)?\s+напоминани[ея]|напомин(ай|ание)|напомни(те)?|не дай(те)?\s+(мне\s+)?забыть|разбуди(те)?(\s+меня)?|мне)(?![а-я])/gi, " ")
+    .replace(/^[\s,.:;!—-]*(что(бы)?(?![а-я]))?[\s,.:;—-]*/i, "").replace(/\s+/g, " ").replace(/[\s,.;:!—-]+$/, "").trim();
+  return { due, text: rest ? rest[0].toUpperCase() + rest.slice(1) : /разбуди/i.test(s) ? "Подъём" : "Напоминание" };
+}
+export const REMIND_INTENT_RE = /напомни|напомина|не дай(те)? (мне )?забыть|разбуди/i;

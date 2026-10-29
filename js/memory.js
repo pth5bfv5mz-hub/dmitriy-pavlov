@@ -4,7 +4,7 @@
    - Устаревшие факты не стираются, а помечаются «устарело» — так не теряется история.
    - Навыки («научись»), уроки (из поправок и оценок), выводы (рефлексия раз в день), дневник разговоров. */
 import { D, persist, idbPut, idbAll, idbDel, idbPrefix } from "./store.js";
-import { within, neutralize, uid, arr, terms, cosine, parseLocal, nextDue, REPEAT_TXT, isoLocal, todayKey, parseJSON } from "./util.js";
+import { within, neutralize, uid, arr, terms, cosine, parseLocal, nextDue, REPEAT_TXT, isoLocal, todayKey, parseJSON, parseWhen, REMIND_INTENT_RE } from "./util.js";
 import { plain, embed, canEmbed } from "./brains.js";
 
 export const CATS = ["личное", "люди", "работа", "учёба", "здоровье", "деньги", "цели", "предпочтения", "другое"];
@@ -112,15 +112,48 @@ export function advanceTask(t) {
   if (!t.anchor) t.anchor = new Date(t.due).getDate();
   t.due = nextDue(t.due, t.repeat, t.anchor) || t.due; t.notified = false;
 }
+/* Номер и почта — только те, что он сам назвал или что есть в его памяти: модель не должна придумывать контакты,
+   а текст со страниц не должен подставить чужой номер. */
+function contactSources(userText) {
+  return [userText, D.about && D.about.text, ...Object.values(D.core), ...D.facts.filter(f => f.status !== "old").map(f => f.text), ...D.notes.map(n => n.text)].join("\n");
+}
+function knownPhone(p, userText) {
+  const digits = String(p || "").replace(/[^\d+]/g, ""); const core = digits.replace(/\D/g, "");
+  if (core.length < 5 || core.length > 15) return null;
+  const tail = core.slice(-10);   // 8 900… и +7 900… — один номер
+  const seen = (contactSources(userText).match(/\+?\d[\d\s()-]{3,}\d/g) || []).map(x => x.replace(/\D/g, ""));
+  return seen.some(x => x.slice(-10) === tail) ? digits : null;
+}
+function knownEmail(e, userText) {
+  const to = String(e || "").trim();
+  if (!to) return "";   // письмо без адреса — адресата он выберет сам
+  return /^[^\s@<>"]+@[^\s@<>"]+\.[^\s@<>"]+$/.test(to) && contactSources(userText).toLowerCase().includes(to.toLowerCase()) ? to : null;
+}
+/* Страховка: он просил напомнить с понятным временем, а модель дело не создала — создаём сами по его словам. */
+export function ensureReminder(userText, out, { temp } = {}) {
+  if (temp || out.newTasks.length || !REMIND_INTENT_RE.test(userText || "")) return null;
+  if (/кажд|ежедневн|еженедельн|по будням|по выходным/i.test(userText)) return null;   // повторяющееся — только моделью, с правильным повтором
+  const w = parseWhen(userText); if (!w) return null;
+  const proj = D.projects.some(p => p.id === D.meta.currentProject) ? D.meta.currentProject : null;
+  const task = { id: uid(), text: w.text.slice(0, 200), due: w.due, repeat: null, done: false, notified: false, ts: Date.now(), auto: true, ...(proj ? { project: proj } : {}) };
+  D.tasks.push(task); out.newTasks.push(task); out.autoTask = task; persist();
+  return task;
+}
 export function applyActions(act, userText, { temp } = {}) {
   const out = { newTasks: [], remembered: [], learned: [], cards: 0, device: [], removed: [], undo: [], done: [] };
   const cut = t => (t = String(t || ""), t.length > 50 ? t.slice(0, 50) + "…" : t);
-  // Действия на iPhone через «Команды»: будильник, таймер, разложить файлы (только известные, с проверкой полей)
+  // Действия на iPhone: будильник, таймер, файлы — через «Команды»; звонок, SMS, WhatsApp, почта, «Поделиться», карты — ссылкой.
+  // Только известные действия, с проверкой полей. Всё выполняется кнопкой под ответом — нажатие и есть его подтверждение.
   if (act && typeof act === "object") arr(act.device).slice(0, 3).forEach(d => {
     if (!d || typeof d !== "object") return;
-    if (d.do === "alarm" && /^\d{1,2}:\d{2}$/.test(String(d.time || "").trim())) out.device.push({ do: "alarm", time: String(d.time).trim().padStart(5, "0"), label: String(d.label || "").slice(0, 60) });
+    const txt = (v, n) => String(v || "").trim().slice(0, n);
+    if (d.do === "alarm" && /^\d{1,2}:\d{2}$/.test(String(d.time || "").trim())) out.device.push({ do: "alarm", time: String(d.time).trim().padStart(5, "0"), label: txt(d.label, 60) });
     else if (d.do === "timer" && +d.minutes > 0 && +d.minutes <= 1440) out.device.push({ do: "timer", minutes: Math.round(+d.minutes * 10) / 10 });
     else if (d.do === "sort_files") out.device.push({ do: "sort_files" });
+    else if (["call", "sms", "whatsapp"].includes(d.do)) { const phone = knownPhone(d.phone, userText); if (phone) out.device.push({ do: d.do, phone, name: txt(d.name, 40), text: d.do === "call" ? "" : txt(d.text, 1000) }); }
+    else if (d.do === "mail") { const to = knownEmail(d.to, userText); if (to !== null) out.device.push({ do: "mail", to, subject: txt(d.subject, 150), text: txt(d.text, 2000) }); }
+    else if (d.do === "share" && txt(d.text, 2000)) out.device.push({ do: "share", text: txt(d.text, 2000) });
+    else if ((d.do === "maps" || d.do === "route") && txt(d.q, 200)) out.device.push({ do: d.do, q: txt(d.q, 200) });
   });
   if (!act || typeof act !== "object") return out;
   const now = Date.now();
@@ -340,7 +373,7 @@ export function selfCheck(question, reply, out, { searched = true } = {}) {
   if (!searched && CLAIM_SEARCH_RE.test(reply))
     found.push(addMistake({ what: "Я сказал, что нашёл или проверил что-то в интернете, хотя поиска в этом ответе не было.", why: "Выдал знания по памяти за свежий поиск.", fix: "Говори «нашёл в интернете» только когда поиск был и есть источники; иначе — «по моим данным, могло устареть» и предложи проверить.", q: question, src: "самопроверка ответа" }));
   if (PROMISE_RE.test(reply) && !out.newTasks.length && !/не напомню|могу напомнить|хочешь, напомню|напомню\?/i.test(reply))
-    found.push(addMistake({ what: "Я сказал, что поставил напоминание, но само дело не создал — напоминания бы не было.", why: "Пообещал словами, но не добавил дело в блок действий.", fix: "Обещая напомнить, всегда создавай дело (tasks) с точной датой и временем; без этого напоминания не будет.", q: question, src: "самопроверка ответа" }));
+    found.push(addMistake({ what: "Я сказал, что поставил напоминание, но само дело не создал — без страховки приложения напоминания бы не было.", why: "Пообещал словами, но не добавил дело в блок действий.", fix: "Обещая напомнить, всегда создавай дело (tasks) с точной датой и временем; без этого напоминания не будет.", q: question, src: "самопроверка ответа" }));
   if (FALSE_CANT_RE.test(reply))
     found.push(addMistake({ what: "Я сказал, что не могу ставить напоминания или выходить в интернет — это неправда, я это умею.", why: "Забыл о своих возможностях.", fix: "Помни свои возможности: я ставлю напоминания (дела с временем, плюс кнопки в Напоминания и Календарь iPhone) и ищу в интернете. Не говори, что не умеешь.", q: question, src: "самопроверка ответа" }));
   return found.filter(Boolean);

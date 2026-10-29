@@ -186,3 +186,136 @@ export function extractFiles(text) {
   }
   return out;
 }
+
+/* ---------- Точечные правки в его собственном Word ----------
+   Модель не переписывает документ, а присылает список замен:
+   <<<EDIT doc="Название"
+   [{"find":"точный фрагмент из текста","replace":"как должно быть"}]
+   EDIT>>>
+   Приложение вносит их в исходный .docx режимом рецензирования (w:del / w:ins, ECMA-376 §17.13.5):
+   оформление, сноски, таблицы и стили остаются как были, а в Word видно каждое изменение — его можно принять или отклонить. */
+export function extractEdits(text) {
+  const out = []; const re = /<<<\s*EDIT([^\n]*)\n([\s\S]*?)(?:EDIT\s*>>>|$)/g; let m;
+  while ((m = re.exec(String(text || "")))) {
+    const doc = (m[1].match(/doc\s*=\s*"([^"]*)"/) || [])[1] || "";
+    let list = null;
+    try { list = JSON.parse(m[2].trim().replace(/^```(?:json)?/i, "").replace(/```$/, "").trim()); } catch {}
+    const edits = (Array.isArray(list) ? list : []).filter(e => e && typeof e.find === "string" && e.find.trim() && typeof (e.replace ?? "") === "string")
+      .slice(0, 200).map(e => ({ find: e.find.slice(0, 2000), replace: String(e.replace ?? "").slice(0, 4000) }));
+    if (edits.length) out.push({ doc, edits });
+  }
+  return out;
+}
+const WNS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main", XMLNS = "http://www.w3.org/XML/1998/namespace";
+// Сравниваем без разницы в кавычках, тире и неразрывных пробелах — замена символ в символ, позиции не сдвигаются
+const fold = s => s.replace(/[«»„“”"]/g, '"').replace(/[‘’‚']/g, "'").replace(/[–—‒]/g, "-").replace(/[   ]/g, " ");
+const ZERO = new Set(["rPr", "lastRenderedPageBreak", "softHyphen", "proofErr"]);
+function runText(r) {
+  let s = "";
+  for (const c of r.children) {
+    if (c.namespaceURI !== WNS || ZERO.has(c.localName)) continue;
+    s += c.localName === "t" ? c.textContent : c.localName === "tab" ? "\t" : c.localName === "br" || c.localName === "cr" ? "\n" : c.localName === "noBreakHyphen" ? "-" : "￼";
+  }
+  return s;
+}
+const closest = (el, name) => { for (let x = el.parentElement; x; x = x.parentElement) if (x.namespaceURI === WNS && x.localName === name) return x; return null; };
+// Каждый прогон — с одним содержимым: так его можно разрезать по символу, не трогая соседние
+function explode(r) {
+  const rPr = [...r.children].find(c => c.localName === "rPr");
+  const parts = [...r.children].filter(c => c !== rPr && !(c.namespaceURI === WNS && ZERO.has(c.localName) && c.localName !== "rPr"));
+  if (parts.length <= 1) return;
+  for (const c of parts) { const n = r.ownerDocument.createElementNS(WNS, "w:r"); if (rPr) n.append(rPr.cloneNode(true)); n.append(c); r.before(n); }
+  r.remove();
+}
+function paraRuns(p) {
+  return [...p.getElementsByTagNameNS(WNS, "r")].filter(r => closest(r, "p") === p && !closest(r, "del") && !closest(r, "moveFrom"));
+}
+function mapRuns(p) {
+  let pos = 0; const list = [];
+  for (const r of paraRuns(p)) { const t = runText(r); list.push({ r, start: pos, end: pos + t.length, t }); pos += t.length; }
+  return { list, text: list.map(x => x.t).join("") };
+}
+function splitAt(p, at) {
+  const { list } = mapRuns(p);
+  const x = list.find(y => y.start < at && at < y.end); if (!x) return;
+  const tEl = [...x.r.children].find(c => c.localName === "t"); if (!tEl) return;
+  const k = at - x.start, second = x.r.cloneNode(true), t2 = [...second.children].find(c => c.localName === "t");
+  t2.textContent = tEl.textContent.slice(k); tEl.textContent = tEl.textContent.slice(0, k);
+  [tEl, t2].forEach(t => t.setAttributeNS(XMLNS, "xml:space", "preserve"));
+  x.r.after(second);
+}
+/* Отмечаем только изменившиеся слова: общее начало и конец фразы остаются как были (и с прежним оформлением). */
+function trimCommon(find, rep) {
+  const a = fold(find), b = fold(rep);
+  const edge = (x, i) => i <= 0 || i >= x.length || /\s/.test(x[i - 1]) || /\s/.test(x[i]);   // граница слова
+  let pre = 0; while (pre < a.length && pre < b.length && a[pre] === b[pre]) pre++;
+  while (pre > 0 && !(edge(a, pre) && edge(b, pre))) pre--;
+  let suf = 0; while (suf < a.length - pre && suf < b.length - pre && a[a.length - 1 - suf] === b[b.length - 1 - suf]) suf++;
+  while (suf > 0 && !(edge(a, a.length - suf) && edge(b, b.length - suf))) suf--;
+  return { pre, suf };
+}
+function applyInPara(p, edit, mk) {
+  paraRuns(p).forEach(explode);
+  const find = fold(edit.find);
+  const found = fold(mapRuns(p).text).indexOf(find); if (found < 0) return false;
+  const text = edit.replace.replace(/\s*\n\s*/g, " ");
+  const { pre, suf } = trimCommon(edit.find, text);
+  const at = found + pre, end = found + find.length - suf, add = text.slice(pre, text.length - suf);
+  if (at >= end && !add) return true;   // менять нечего
+  splitAt(p, at); splitAt(p, end);
+  const runs = mapRuns(p).list;
+  const hit = runs.filter(x => x.start >= at && x.end <= end && (x.end > x.start || (x.start > at && x.end < end)));
+  const d = p.ownerDocument;
+  const mkIns = like => {
+    const ins = mk("ins"), r = d.createElementNS(WNS, "w:r"), rPr = like && [...like.children].find(c => c.localName === "rPr");
+    if (rPr) r.append(rPr.cloneNode(true));
+    const t = d.createElementNS(WNS, "w:t"); t.setAttributeNS(XMLNS, "xml:space", "preserve"); t.textContent = add; r.append(t);
+    ins.append(r); return ins;
+  };
+  if (at >= end) {   // только вставка — после прогона, который кончается здесь (или перед тем, что начинается)
+    const before = runs.filter(x => x.end === at && x.end > x.start).pop(), after = runs.find(x => x.start === at && x.end > x.start);
+    const ref = before || after; if (!ref || closest(ref.r, "ins")) return false;
+    const ins = mkIns(ref.r); before ? before.r.after(ins) : after.r.before(ins);
+    return true;
+  }
+  if (!hit.length || hit.some(x => x.r.parentNode !== hit[0].r.parentNode) || closest(hit[0].r, "ins")) return false;
+  const del = mk("del"); hit[0].r.before(del);
+  for (const x of hit) {
+    for (const t of [...x.r.children].filter(c => c.localName === "t")) { const dt = d.createElementNS(WNS, "w:delText"); dt.setAttributeNS(XMLNS, "xml:space", "preserve"); dt.textContent = t.textContent; t.replaceWith(dt); }
+    del.append(x.r);
+  }
+  if (add) del.after(mkIns(hit[0].r));
+  return true;
+}
+export async function applyDocxEdits(bytes, edits, author = "Дмитрий Павлов") {
+  const { unzipSync, zipSync, strFromU8, strToU8 } = await import(LIB + "fflate.js");
+  const files = unzipSync(new Uint8Array(bytes));
+  const names = ["word/document.xml", "word/footnotes.xml", "word/endnotes.xml"].filter(n => files[n]);
+  if (!names.length) throw new Error("Это не похоже на документ Word.");
+  const xml = {}, docs = {};
+  for (const n of names) {
+    xml[n] = strFromU8(files[n]);
+    const d = new DOMParser().parseFromString(xml[n], "application/xml");
+    if (!d.getElementsByTagName("parsererror").length) docs[n] = d;
+  }
+  let id = Math.max(0, ...Object.values(xml).flatMap(s => [...s.matchAll(/w:id="(-?\d+)"/g)].map(m => +m[1]))) + 1;
+  const date = new Date().toISOString().replace(/\.\d+Z$/, "Z");
+  const applied = [], missed = [], touched = new Set();
+  for (const e of edits) {
+    let ok = false;
+    for (const n of Object.keys(docs)) {
+      const d = docs[n];
+      const mk = tag => { const el = d.createElementNS(WNS, "w:" + tag); el.setAttributeNS(WNS, "w:id", String(id++)); el.setAttributeNS(WNS, "w:author", author); el.setAttributeNS(WNS, "w:date", date); return el; };
+      for (const p of [...d.getElementsByTagNameNS(WNS, "p")]) if (applyInPara(p, e, mk)) { ok = true; touched.add(n); break; }
+      if (ok) break;
+    }
+    (ok ? applied : missed).push(e);
+  }
+  for (const n of touched) {
+    let s = new XMLSerializer().serializeToString(docs[n]);
+    if (!/^<\?xml/.test(s)) s = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\r\n' + s;
+    files[n] = strToU8(s);
+  }
+  const blob = new Blob([zipSync(files, { level: 6 })], { type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document" });
+  return { blob, applied, missed };
+}

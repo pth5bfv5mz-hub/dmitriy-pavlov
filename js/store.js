@@ -117,7 +117,7 @@ export function persist() {
 export async function exportAll(withMsgs = true) {
   const o = { app: "dmitriy-pavlov", v: 3, at: new Date().toISOString() };
   KEYS.forEach(k => { if (k !== "msgs" || withMsgs) o[k] = k === "msgs" ? D.msgs.filter(m => !m.temp) : k === "meta" ? { ...D.meta, tempChat: false } : D[k]; });
-  try { o.chunks = await idbAll("chunks"); } catch { o.chunks = []; }   // тексты базы знаний
+  try { o.chunks = (await idbAll("chunks")).filter(c => !c.orig); } catch { o.chunks = []; }   // тексты базы знаний; исходные Word не кладём — они большие
   return o;
 }
 const isObj = x => x && typeof x === "object" && !Array.isArray(x);

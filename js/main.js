@@ -5,12 +5,12 @@ import { chat, plain, order, anyBrain, configured, BRAINS, explain, discoverGemi
 // Признаки «не знаю свежего» в ответе модели без поиска
 const NOKNOW_RE = /(нет|не имею) (доступа|возможности)[^.]{0,30}(интернет|актуальн|свеж|реальн|текущ)|не могу (проверить|знать|посмотреть|найти)[^.]{0,25}(интернет|актуальн|текущ|сейчас|сегодня)|на момент (моего )?(обучения|последнего обновления)|(у меня )?нет (актуальн|свеж)[а-я]* (данных|информации|сведений)|не располагаю (актуальн|свеж)|мои (данные|знания) (ограничены|заканчиваются)|рекомендую (проверить|уточнить) на (официальн|сайт)/i;
 import { buildPrompt } from "./prompt.js";
-import { relevantFacts, activeFacts, applyActions, stripActions, extractActions, contextStart, updateDiary, reflect, tidyMemory, lessonFromFeedback, completeTask, advanceTask, selfCheck, selfReview, openMistakes, ensureFactVecs, editFact, dueCards, gradeCard, CATS } from "./memory.js";
-import { addDoc, removeDoc, search, fromUrl, fromFile, ensureDocVecs, docsForPrompt, docFull, deepPass } from "./knowledge.js";
-import { extractFiles, makeFile, shareFile, fileName, FORMATS } from "./files.js";
+import { relevantFacts, activeFacts, applyActions, stripActions, extractActions, contextStart, updateDiary, reflect, tidyMemory, lessonFromFeedback, completeTask, advanceTask, selfCheck, selfReview, openMistakes, ensureFactVecs, editFact, ensureReminder, dueCards, gradeCard, CATS } from "./memory.js";
+import { addDoc, removeDoc, search, fromUrl, fromFile, ensureDocVecs, docsForPrompt, docFull, docOrig, deepPass } from "./knowledge.js";
+import { extractFiles, extractEdits, applyDocxEdits, makeFile, shareFile, fileName, FORMATS } from "./files.js";
 import * as V from "./voice.js";
 
-const VERSION = "4.2.0";
+const VERSION = "4.3.0";
 let photo = null, busy = null, lastFail = "";
 
 /* =================== Статус и проект =================== */
@@ -303,7 +303,7 @@ async function send(text, opts = {}) {
     for (const fd of live) {
       fd.ts = Date.now();
       const full = await docFull(fd.id).catch(() => "");
-      if (full && full.length <= 60000 / live.length) doc.push({ title: fd.title, text: full, full: true });
+      if (full && full.length <= 60000 / live.length) doc.push({ title: fd.title, text: full, full: true, word: !!(D.docs.find(x => x.id === fd.id) || {}).orig });
       else if (full && WHOLE_RE.test(text)) {
         const r = await deepPass(fd.title, full, text, async p => (await chat({ system: "Ты внимательно читаешь часть документа и выписываешь нужное для задачи. По-русски, точно, без выдумок.", hist: [{ role: "user", text: p }], onText: () => {}, signal: ctl.signal, noSearch: true })).text,
           { signal: ctl.signal, onProgress: (k, n) => { body.innerHTML = `<span class="thinking">Читаю «${esc(fd.title)}»: часть ${k} из ${n}…</span>`; } });
@@ -333,8 +333,17 @@ async function send(text, opts = {}) {
     el.dataset.who = who;
     addSources(el, res.sources);
     const out = applyActions(extractActions(res.text), text, { temp });
+    // Сначала самопроверка (промах модели записывается в журнал недочётов), потом страховка:
+    // просил напомнить, а дела нет — создаём по его словам
     if (!temp && selfCheck(text, visible, out, { searched: !!(res.sources && res.sources.length) }).length) out.learned.push("свой недочёт");
+    ensureReminder(text, out, { temp });
     const files = extractFiles(res.text).map(f => ({ ...f, content: f.content.slice(0, 300000) }));
+    // Правки в его Word: файл собирается из исходника, сами замены хранятся в истории (их немного)
+    for (const b of extractEdits(res.text)) {
+      const src = editTarget(b.doc, live);
+      if (src) files.push({ name: src.title + " — правки", format: "docx", edits: b.edits, src: src.id });
+      else { const n = document.createElement("div"); n.className = "memnote"; n.textContent = "Правки не внесены: исходного файла Word нет (PDF или прислан до версии 4.3) — пришли документ ещё раз."; el.append(n); }
+    }
     const msg = { role: "ai", text: visible, ts: Date.now(), sources: (res.sources || []).slice(0, 6), brain: res.brain, temp, ...(files.length ? { files } : {}) };
     if (files.length) renderFileCards(el, files, true);
     D.msgs.push(msg); persist();
@@ -349,6 +358,7 @@ async function send(text, opts = {}) {
     if (out.learned.length) notes.push("📘 Выучил: " + out.learned.join(", "));
     if (out.cards) notes.push("🃏 " + plural(out.cards, "новая карточка", "новые карточки", "новых карточек"));
     if (out.done.length) notes.push("✓ Отметил сделанным: " + out.done.join("; "));
+    if (out.autoTask) notes.push(`⏰ Напоминание создано: «${out.autoTask.text}» — ${fmtDue(out.autoTask.due)}`);
     if (notes.length) { const n = document.createElement("div"); n.className = "memnote"; n.textContent = notes.join(" · "); el.append(n); }
     if (out.removed.length) addUndoNote(el, out);
     renderLists();
@@ -447,6 +457,23 @@ $("#projAdd").addEventListener("submit", e => {
 
 /* =================== Файлы от Дмитрия Павлова =================== */
 /* Карточка файла: собирается на телефоне; новый — сразу (чтобы «Отправить» сработало по первому касанию), из истории — по касанию. */
+/* В какой документ вносить правки: по названию, иначе — единственный Word в фокусе разговора. */
+function editTarget(title, live) {
+  const words = D.docs.filter(d => d.orig), t = String(title || "").trim().toLowerCase().replace(/\.docx$/, "");
+  return (t && (words.find(d => d.title.toLowerCase() === t) || words.find(d => d.title.toLowerCase().includes(t) || t.includes(d.title.toLowerCase()))))
+    || (() => { const inFocus = (live || []).map(x => words.find(d => d.id === x.id)).filter(Boolean); return inFocus[inFocus.length - 1] || null; })();
+}
+async function buildEdited(f, info) {
+  const bytes = await docOrig(f.src); if (!bytes) throw new Error("исходный файл удалён");
+  const r = await applyDocxEdits(bytes, f.edits);
+  info.textContent = `Word · правок внесено: ${r.applied.length} из ${f.edits.length} (видны как исправления)`;
+  if (r.missed.length && !info.nextElementSibling) {
+    const m = document.createElement("span"); m.className = "missed";
+    m.textContent = "Не нашёл в тексте: " + r.missed.map(e => "«" + e.find.slice(0, 60) + (e.find.length > 60 ? "…" : "") + "»").join(", ");
+    info.after(m);
+  }
+  return r.blob;
+}
 function renderFileCards(el, files, eager) {
   files.forEach(f => {
     const name = fileName(f.name, f.format);
@@ -454,13 +481,13 @@ function renderFileCards(el, files, eager) {
     card.innerHTML = `<div class="fc-ico" aria-hidden="true">📄</div><div class="fc-meta"><b>${esc(name)}</b><span>${esc(FORMATS[f.format] || "")}</span></div>`;
     const info = card.querySelector(".fc-meta span");
     let blob = null, building = null;
-    const build = () => building || (building = makeFile(f.name, f.format, f.content).then(b => { blob = b; info.textContent = `${FORMATS[f.format]} · ${(b.size / 1024).toFixed(b.size < 10240 ? 1 : 0)} КБ`; return b; })
+    const build = () => building || (building = (f.edits ? buildEdited(f, info) : makeFile(f.name, f.format, f.content).then(b => { info.textContent = `${FORMATS[f.format]} · ${(b.size / 1024).toFixed(b.size < 10240 ? 1 : 0)} КБ`; return b; })).then(b => { blob = b; return b; })
       .catch(e => { building = null; info.textContent = "не получилось собрать: " + (e.message || e); throw e; }));
     if (eager) build().catch(() => {});
     const box = document.createElement("div"); box.className = "acts";
     box.append(pill("📤 Отправить / сохранить", async () => { try { await shareFile(blob || await build(), name); } catch {} }, "primary"));
     const other = f.format === "pdf" ? "docx" : "pdf";
-    box.append(pill(other === "pdf" ? "В PDF" : "В Word", async e => {
+    if (!f.edits) box.append(pill(other === "pdf" ? "В PDF" : "В Word", async e => {
       const b = e.target; b.disabled = true; const t = b.textContent; b.textContent = "Собираю…";
       try { await shareFile(await makeFile(f.name, other, f.content), fileName(f.name, other)); } catch (err) { toast("Не получилось: " + (err.message || err)); }
       finally { b.disabled = false; b.textContent = t; }
@@ -485,7 +512,7 @@ async function attachDoc(file) {
   showDoc("Читаю «" + file.name + "»…");
   try {
     const r = await fromFile(file, t => showDoc(t));
-    const d = await addDoc(r.title || file.name, r.text, r.kind, { pages: r.pages || 0, background: true, onProgress: t => showDoc(t) });
+    const d = await addDoc(r.title || file.name, r.text, r.kind, { pages: r.pages || 0, background: true, orig: r.orig, onProgress: t => showDoc(t) });
     if (D.meta.currentProject) { d.project = D.meta.currentProject; persist(); }
     // Недавние документы (30 минут) остаются рядом с новым — их можно сравнить; не больше трёх
     focusDocs = focusDocs.filter(x => x.id !== d.id && Date.now() - x.ts < 30 * 6e4).slice(-2);
@@ -695,19 +722,45 @@ $("#selfReviewBtn").onclick = async e => {
    Дмитрий Павлов передаёт задачу команде «ДП Действие» (её один раз создают по инструкции), она и выполняет. */
 const DEVICE_SHORTCUT = "ДП Действие";
 // Переход в «Команды» (в тестах перехватывается через window.__dpOpen)
-const openURL = url => { if (window.__dpOpen) window.__dpOpen(url); else location.href = url; };
-function runDevice(d) {
-  openURL("shortcuts://run-shortcut?name=" + encodeURIComponent(DEVICE_SHORTCUT) + "&input=text&text=" + encodeURIComponent(JSON.stringify(d)));
+// Сайты (карты, WhatsApp) — в Safari, чтобы не уводить само приложение со страницы; tel:, sms:, mailto:, shortcuts: — напрямую
+const openURL = url => { if (window.__dpOpen) window.__dpOpen(url); else if (/^https?:/i.test(url)) window.open(url, "_blank", "noopener"); else location.href = url; };
+const VIA_SHORTCUT = d => ["alarm", "timer", "sort_files"].includes(d.do);
+const enc = encodeURIComponent;
+async function runDevice(d) {
+  if (VIA_SHORTCUT(d)) return openURL("shortcuts://run-shortcut?name=" + enc(DEVICE_SHORTCUT) + "&input=text&text=" + enc(JSON.stringify(d)));
+  if (d.do === "call") return openURL("tel:" + d.phone);
+  if (d.do === "sms") return openURL("sms:" + d.phone + (d.text ? "&body=" + enc(d.text) : ""));   // так iOS подставляет текст
+  if (d.do === "whatsapp") return openURL("https://wa.me/" + d.phone.replace(/\D/g, "") + (d.text ? "?text=" + enc(d.text) : ""));
+  if (d.do === "mail") return openURL("mailto:" + enc(d.to).replace(/%40/g, "@") + "?subject=" + enc(d.subject || "") + "&body=" + enc(d.text || ""));
+  if (d.do === "maps") return openURL("https://yandex.ru/maps/?text=" + enc(d.q));
+  if (d.do === "route") return openURL("https://yandex.ru/maps/?rtext=~" + enc(d.q) + "&rtt=auto");
+  if (d.do === "share") {
+    // Меню «Поделиться» iPhone: Telegram, WhatsApp, Сообщения, Заметки… — получателя выбирает он сам
+    if (navigator.share) { try { await navigator.share({ text: d.text }); } catch {} }
+    else { try { await navigator.clipboard.writeText(d.text); toast("Текст скопирован — вставь его, куда нужно.", 2500); } catch { toast("Не получилось открыть «Поделиться»."); } }
+  }
 }
 function deviceLabel(d) {
-  return d.do === "alarm" ? `⏰ Поставить будильник на ${d.time}` : d.do === "timer" ? `⏱ Запустить таймер на ${plural(d.minutes, "минуту", "минуты", "минут")}` : "🗂 Разложить файлы по папкам";
+  const who = d.name || d.phone || d.to;
+  return d.do === "alarm" ? `⏰ Поставить будильник на ${d.time}` : d.do === "timer" ? `⏱ Запустить таймер на ${plural(d.minutes, "минуту", "минуты", "минут")}`
+    : d.do === "sort_files" ? "🗂 Разложить файлы по папкам" : d.do === "call" ? `📞 Позвонить: ${who}` : d.do === "sms" ? `💬 SMS: ${who}` : d.do === "whatsapp" ? `🟢 WhatsApp: ${who}`
+    : d.do === "mail" ? `✉️ Письмо${d.to ? ": " + d.to : ""}` : d.do === "share" ? "📤 Отправить (Telegram, WhatsApp…)" : d.do === "route" ? `🧭 Маршрут: ${d.q}` : `🗺 На карте: ${d.q}`;
 }
 function addDeviceButtons(el, list) {
   const box = document.createElement("div"); box.className = "acts";
   list.forEach(d => box.append(pill(deviceLabel(d), () => runDevice(d), "primary")));
-  const hint = document.createElement("div"); hint.className = "small";
-  hint.innerHTML = `Сработает через приложение «Команды» — если команды «${DEVICE_SHORTCUT}» ещё нет, <a href="guide.html#apps">создай её по инструкции</a> (один раз).`;
-  el.append(box, hint);
+  el.append(box);
+  // Текст сообщения виден до отправки — он проверяет, что уйдёт
+  list.filter(d => d.text).forEach(d => { const p = document.createElement("div"); p.className = "small"; p.textContent = "Текст: «" + d.text + "»"; el.append(p); });
+  if (list.some(VIA_SHORTCUT)) {
+    const hint = document.createElement("div"); hint.className = "small";
+    hint.innerHTML = `Сработает через приложение «Команды» — если команды «${DEVICE_SHORTCUT}» ещё нет, <a href="guide.html#apps">создай её по инструкции</a> (один раз).`;
+    el.append(hint);
+  }
+  if (list.some(d => ["call", "sms", "whatsapp", "mail", "share"].includes(d.do))) {
+    const hint = document.createElement("div"); hint.className = "small"; hint.textContent = "Ничего не отправлено: кнопка откроет приложение с готовым текстом, отправляешь ты.";
+    el.append(hint);
+  }
 }
 $("#testAlarm").onclick = () => runDevice({ do: "timer", minutes: 1 });
 
