@@ -1,6 +1,6 @@
 /* Дмитрий Павлов 3.0 — сборка интерфейса. */
 import { $, $$, uid, esc, md, plural, fmtDue, fmtAgo, isoLocal, hm, dayStart, todayKey, parseLocal, nextDue, pad, REPEAT_TXT, DAYS, MONTHS } from "./util.js";
-import { S, D, saveSettings, persist, exportAll, importAll, idbAll, setQuotaHandler, dataVersion } from "./store.js";
+import { S, D, saveSettings, persist, exportAll, importAll, idbAll, setQuotaHandler, dataVersion, ABOUT_MAX } from "./store.js";
 import { chat, plain, order, anyBrain, configured, BRAINS, explain, discoverGemini, ping, canTranscribe, canTTS, isBlocked, ttsGemini, discoverOpenRouter, isKeyErr } from "./brains.js";
 // Признаки «не знаю свежего» в ответе модели без поиска
 const NOKNOW_RE = /(нет|не имею) (доступа|возможности)[^.]{0,30}(интернет|актуальн|свеж|реальн|текущ)|не могу (проверить|знать|посмотреть|найти)[^.]{0,25}(интернет|актуальн|текущ|сейчас|сегодня)|на момент (моего )?(обучения|последнего обновления)|(у меня )?нет (актуальн|свеж)[а-я]* (данных|информации|сведений)|не располагаю (актуальн|свеж)|мои (данные|знания) (ограничены|заканчиваются)|рекомендую (проверить|уточнить) на (официальн|сайт)/i;
@@ -10,7 +10,7 @@ import { addDoc, removeDoc, search, fromUrl, fromFile, ensureDocVecs, docsForPro
 import { extractFiles, makeFile, shareFile, fileName, FORMATS } from "./files.js";
 import * as V from "./voice.js";
 
-const VERSION = "4.1.0";
+const VERSION = "4.2.0";
 let photo = null, busy = null, lastFail = "";
 
 /* =================== Статус и проект =================== */
@@ -805,6 +805,7 @@ function renderKnow() {
   emptyAfter("#lessons", D.lessons.length, "Пока нет. Ставь 👎 под неудачными ответами — я сделаю выводы.");
 }
 function renderMem() {
+  if (document.activeElement !== $("#aboutText")) { $("#aboutText").value = D.about.text || ""; aboutCount(); }
   $("#cProfile").value = D.core.profile || ""; $("#cGoals").value = D.core.goals || ""; $("#cPeople").value = D.core.people || ""; $("#cPrefs").value = D.core.preferences || "";
   $("#insights").innerHTML = D.insights.slice().reverse().map(i => `<li class="row nocheck"><div class="tx">${esc(i.text)}</div><button class="x" data-del="insights:${esc(i.id)}" aria-label="Удалить">×</button></li>`).join("");
   emptyAfter("#insights", D.insights.length, "Выводы появятся, когда я узнаю тебя получше (обновляю раз в день).");
@@ -872,6 +873,18 @@ $("#addFact").addEventListener("submit", e => {
   e.preventDefault(); const text = $("#newFact").value.trim(); if (!text) return;
   D.facts.push({ id: uid(), text, cat: "другое", imp: 7, ts: Date.now(), used: Date.now(), status: "active", pinned: true }); persist(); renderMem(); $("#newFact").value = "";
 });
+// «О себе»: его собственный текст — целиком в каждый запрос, поэтому с ограничением длины
+function aboutCount() { const n = $("#aboutText").value.length; $("#aboutCount").textContent = n ? `${n.toLocaleString("ru-RU")} из ${ABOUT_MAX.toLocaleString("ru-RU")} знаков` : ""; $("#aboutCount").classList.toggle("over", n > ABOUT_MAX); }
+$("#aboutText").addEventListener("input", aboutCount);
+$("#saveAbout").onclick = () => {
+  const t = $("#aboutText").value.trim();
+  if (t.length > ABOUT_MAX) { toast(`Слишком длинно: ${t.length} знаков, можно до ${ABOUT_MAX}. Сократи — этот текст уходит в каждый запрос.`, 5000); return; }
+  D.about = { text: t, ts: Date.now() }; persist(); toast(t ? "Сохранил. Буду учитывать в каждом ответе." : "Очистил.", 2200);
+};
+$("#pasteAbout").onclick = async () => {
+  try { const t = await navigator.clipboard.readText(); if (!t.trim()) { toast("Буфер пуст."); return; } $("#aboutText").value = t.trim(); aboutCount(); toast("Вставил. Проверь и нажми «Сохранить».", 2500); }
+  catch { toast("Не получилось прочитать буфер — вставь вручную: подержи палец в поле → «Вставить»."); }
+};
 $("#saveCore").onclick = () => {
   D.core = { profile: $("#cProfile").value.trim(), goals: $("#cGoals").value.trim(), people: $("#cPeople").value.trim(), preferences: $("#cPrefs").value.trim() };
   persist(); toast("Профиль сохранён.", 1800);

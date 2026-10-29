@@ -86,8 +86,14 @@
 
     <!-- ============ Память ============ -->
     <section class="view page" id="v-mem" aria-label="Память">
+      <h2>О себе — твоим текстом</h2>
+      <p class="small">Вставь сюда, кто ты, как с тобой говорить, твои проекты и цели. Я держу это в голове в каждом ответе и не пересказываю без повода. Сам этот текст не меняю.</p>
+      <div class="field">
+        <textarea id="aboutText" rows="6" aria-label="О себе"></textarea>
+        <div class="row-btns"><button type="button" id="saveAbout">Сохранить</button><button type="button" id="pasteAbout">Вставить из буфера</button><span class="small" id="aboutCount"></span></div>
+      </div>
       <h2>Профиль Сумрака</h2>
-      <p class="small">Главное о тебе — я держу это в голове всегда. Обновляю сам раз в день, можно поправить.</p>
+      <p class="small">Моя короткая сводка о тебе по памяти — обновляю сам раз в день, можно поправить.</p>
       <div class="field">
         <label for="cProfile">Кто ты</label><textarea id="cProfile" rows="2"></textarea>
         <label for="cGoals">Цели и планы</label><textarea id="cGoals" rows="2"></textarea>

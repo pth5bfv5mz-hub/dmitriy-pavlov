@@ -47,6 +47,7 @@ export const D = {
   msgs: load("msgs", []),         // {role:'user'|'ai', text, ts, sources?, photo?, mode?, rating?}
   facts: load("facts", []),       // {id, text, cat, imp(1-10), ts, used, status:'active'|'old', pinned?}
   core: load("core", { profile: "", goals: "", people: "", preferences: "" }),
+  about: load("about", { text: "", ts: 0 }), // профиль его же словами (вставил сам): в каждом запросе, ассистент его не переписывает
   tasks: load("tasks", []),       // {id, text, due, repeat, done, notified, ts}
   notes: load("notes", []),       // {id, text, ts}
   diary: load("diary", { text: "", upTo: 0 }),
@@ -88,7 +89,7 @@ D.msgs = D.msgs.filter(m => !m.temp);
 // Старые факты без новых полей
 D.facts.forEach(f => { f.cat = f.cat || "другое"; f.imp = f.imp || 5; f.status = f.status || "active"; f.used = f.used || f.ts || Date.now(); });
 
-const KEYS = ["msgs", "facts", "core", "tasks", "notes", "diary", "skills", "lessons", "mistakes", "insights", "projects", "cards", "docs", "meta"];
+const KEYS = ["msgs", "facts", "core", "about", "tasks", "notes", "diary", "skills", "lessons", "mistakes", "insights", "projects", "cards", "docs", "meta"];
 let onQuota = () => {};
 export const setQuotaHandler = f => { onQuota = f; };
 /* Сохранить всё. Если память телефона переполнена — ужимаем переписку и пробуем ещё раз. */
@@ -139,6 +140,7 @@ export async function importAll(o) {
   for (const k of Object.keys(next)) if (Array.isArray(next[k])) next[k] = next[k].map(cleanItem).filter(Boolean);
   if (next.facts) next.facts.forEach(f => { f.text = String(f.text || ""); f.cat = String(f.cat || "другое"); f.imp = clampNum(f.imp, 1, 10, 5); f.status = f.status === "old" ? "old" : "active"; f.used = f.used || f.ts || Date.now(); });
   if (next.facts) next.facts = next.facts.filter(f => f.text && f.id);
+  if (next.about) next.about = { text: String(next.about.text || "").slice(0, ABOUT_MAX), ts: clampNum(next.about.ts, 0, 1e14, 0) };
   if (next.tasks) next.tasks.forEach(t => { if (!Object.hasOwn(REPEAT_KEYS, t.repeat)) t.repeat = null; });
   const chunks = Array.isArray(o.chunks) ? o.chunks.filter(c => isObj(c) && c.id && c.docId && typeof c.text === "string").map(c => ({ id: safeId(c.id), docId: safeId(c.docId), n: clampNum(c.n, -1, 1e7, 0), title: String(c.title || ""), text: c.text, ...(c.full ? { full: true } : {}) })) : null;
   if (next.docs && next.docs.length && !(chunks && chunks.length)) throw new Error("bad: docs without text");
@@ -150,6 +152,7 @@ export async function importAll(o) {
   }
   persist();
 }
+export const ABOUT_MAX = 12000;
 const REPEAT_KEYS = { daily: 1, weekdays: 1, weekly: 1, monthly: 1, yearly: 1 };
 const safeId = v => { const s = String(v ?? ""); return /^[\w:.-]{1,80}$/.test(s) ? s : "x" + Math.random().toString(36).slice(2, 12); };
 const clampNum = (v, lo, hi, def) => { const n = Number(v); return Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : def; };
